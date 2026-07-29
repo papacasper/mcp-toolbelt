@@ -1,0 +1,14 @@
+{
+  "name": "mcp-toolbelt",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "x402-hono": "^1.2.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
