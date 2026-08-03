@@ -205,6 +205,89 @@ async function fetchText(url: string): Promise<string> {
   return await res.text();
 }
 
+interface HeaderCheck {
+  header: string;
+  present: boolean;
+  value: string | null;
+  severity: "info" | "warn" | "fail";
+  issue: string | null;
+}
+
+function auditSecurityHeaders(headers: Headers, isHttps: boolean): { checks: HeaderCheck[]; score: number } {
+  const get = (name: string) => headers.get(name);
+  const checks: HeaderCheck[] = [];
+
+  const hsts = get("strict-transport-security");
+  checks.push({
+    header: "Strict-Transport-Security",
+    present: !!hsts,
+    value: hsts,
+    severity: isHttps && !hsts ? "fail" : "info",
+    issue: isHttps && !hsts ? "Missing HSTS — allows protocol downgrade attacks" : null,
+  });
+
+  const csp = get("content-security-policy");
+  checks.push({
+    header: "Content-Security-Policy",
+    present: !!csp,
+    value: csp,
+    severity: csp ? "info" : "warn",
+    issue: csp ? null : "Missing CSP — no defense-in-depth against XSS/injection",
+  });
+
+  const xfo = get("x-frame-options");
+  const cspFrameAncestors = csp?.toLowerCase().includes("frame-ancestors") ?? false;
+  checks.push({
+    header: "X-Frame-Options",
+    present: !!xfo,
+    value: xfo,
+    severity: xfo || cspFrameAncestors ? "info" : "warn",
+    issue: xfo || cspFrameAncestors ? null : "Missing X-Frame-Options/CSP frame-ancestors — clickjacking risk",
+  });
+
+  const xcto = get("x-content-type-options");
+  checks.push({
+    header: "X-Content-Type-Options",
+    present: !!xcto,
+    value: xcto,
+    severity: xcto?.toLowerCase() === "nosniff" ? "info" : "warn",
+    issue: xcto?.toLowerCase() === "nosniff" ? null : "Missing or invalid X-Content-Type-Options — MIME sniffing risk",
+  });
+
+  const refPolicy = get("referrer-policy");
+  checks.push({
+    header: "Referrer-Policy",
+    present: !!refPolicy,
+    value: refPolicy,
+    severity: refPolicy ? "info" : "warn",
+    issue: refPolicy ? null : "Missing Referrer-Policy — full URLs may leak to third parties on outbound links",
+  });
+
+  const permsPolicy = get("permissions-policy");
+  checks.push({
+    header: "Permissions-Policy",
+    present: !!permsPolicy,
+    value: permsPolicy,
+    severity: "info",
+    issue: null,
+  });
+
+  const xssProtection = get("x-xss-protection");
+  checks.push({
+    header: "X-XSS-Protection",
+    present: !!xssProtection,
+    value: xssProtection,
+    severity: "info",
+    issue: null,
+  });
+
+  const failCount = checks.filter((c) => c.severity === "fail").length;
+  const warnCount = checks.filter((c) => c.severity === "warn").length;
+  const score = Math.max(0, 100 - failCount * 25 - warnCount * 10);
+
+  return { checks, score };
+}
+
 function extractLinks(html: string, baseUrl: string): string[] {
   const links = new Set<string>();
   const re = /<a\s[^>]*href=["']([^"'#][^"']*)["']/gi;
@@ -512,6 +595,32 @@ export const tools = {
         .filter((p) => Number.isInteger(p) && p > 0 && p <= 65535)
         .slice(0, 100);
       return scanPorts(cleanHost, list);
+    },
+  },
+
+  security_headers_audit: {
+    price: "$0.0002",
+    description:
+      "Fetch a URL and audit its response for security-relevant HTTP headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy). Flags missing/misconfigured headers with a score.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to audit" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+        redirect: "follow",
+      });
+      const { checks, score } = auditSecurityHeaders(res.headers, new URL(res.url).protocol === "https:");
+      return {
+        url: res.url,
+        status: res.status,
+        score,
+        checks,
+      };
     },
   },
 };
