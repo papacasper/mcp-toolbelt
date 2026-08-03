@@ -115,6 +115,69 @@ export const tools = {
       return scanPorts(cleanHost, list);
     },
   },
+
+  websocket_endpoint_check: {
+    price: "$0.0002",
+    description:
+      "Test a WebSocket endpoint (ws:// or wss://): attempts the handshake, reports success/failure, time-to-open in ms, and close code/reason. Useful for verifying a WebSocket server is reachable and completes its upgrade handshake before you wire real traffic to it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "WebSocket URL to test, e.g. wss://example.com/socket" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      if (!/^wss?:\/\//i.test(url)) {
+        return { url, connected: false, error: "URL must start with ws:// or wss://" };
+      }
+      const start = Date.now();
+      return new Promise((resolve) => {
+        let settled = false;
+        const ws = new WebSocket(url);
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try {
+            ws.close();
+          } catch {}
+          resolve({ url, connected: false, error: "Handshake timed out after 8000ms" });
+        }, 8000);
+
+        ws.addEventListener("open", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          const timeToOpenMs = Date.now() - start;
+          ws.close(1000, "check complete");
+          resolve({ url, connected: true, timeToOpenMs });
+        });
+
+        ws.addEventListener("close", (event: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve({
+            url,
+            connected: false,
+            timeToOpenMs: Date.now() - start,
+            closeCode: event?.code ?? null,
+            closeReason: event?.reason || null,
+          });
+        });
+
+        ws.addEventListener("error", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try {
+            ws.close();
+          } catch {}
+          resolve({ url, connected: false, timeToOpenMs: Date.now() - start, error: "Connection error during handshake" });
+        });
+      });
+    },
+  },
 };
 
 export type ToolName = keyof typeof tools;
