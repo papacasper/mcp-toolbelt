@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { paymentMiddleware } from "x402-hono";
 import { tools } from "./tools";
+import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
+import { dashboardHtml } from "./dashboard";
 
 const PORT = Number(process.env.PORT ?? 3457);
 const API_KEY = process.env.MCP_API_KEY ?? "";
@@ -12,6 +14,21 @@ const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? "https://facili
 const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true, service: "mcp-toolbelt" }));
+
+function requireApiKey(c: any): Response | null {
+  if (!API_KEY) return null;
+  const provided = c.req.header("x-api-key") ?? c.req.query("key") ?? "";
+  if (provided !== API_KEY) return c.json({ error: "unauthorized" }, 401);
+  return null;
+}
+
+app.get("/dashboard", (c) => c.html(dashboardHtml));
+
+app.get("/dashboard-data", (c) => {
+  const unauthorized = requireApiKey(c);
+  if (unauthorized) return unauthorized;
+  return c.json(getStats());
+});
 
 // Payment-gated REST entrypoint — one route per tool, priced via x402.
 // Separate from the JSON-RPC endpoint below since x402-hono gates by HTTP path,
@@ -42,10 +59,28 @@ if (X402_PAY_TO) {
     } catch {
       // no body is fine for tools with no required args
     }
+    const started = Date.now();
     try {
       const output = await (tools as any)[name].run(args);
+      const payment = decodePaymentResponseHeader(c.res.headers.get("X-PAYMENT-RESPONSE"));
+      logCall({
+        tool: name,
+        transport: "pay",
+        success: true,
+        durationMs: Date.now() - started,
+        payer: payment?.payer,
+        txHash: payment?.txHash,
+        network: payment?.network,
+      });
       return c.json(output);
     } catch (err: any) {
+      logCall({
+        tool: name,
+        transport: "pay",
+        success: false,
+        durationMs: Date.now() - started,
+        error: err?.message ?? String(err),
+      });
       return c.json({ error: err?.message ?? String(err) }, 502);
     }
   });
@@ -108,8 +143,10 @@ app.post("/", async (c) => {
         if (!name || !(name in tools)) {
           return c.json(rpcError(id, -32602, `Unknown tool: ${name}`), 400);
         }
+        const started = Date.now();
         try {
           const output = await (tools as any)[name].run(args);
+          logCall({ tool: name, transport: "rpc", success: true, durationMs: Date.now() - started });
           return c.json(
             rpcResult(id, {
               content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -117,6 +154,13 @@ app.post("/", async (c) => {
             })
           );
         } catch (err: any) {
+          logCall({
+            tool: name,
+            transport: "rpc",
+            success: false,
+            durationMs: Date.now() - started,
+            error: err?.message ?? String(err),
+          });
           return c.json(
             rpcResult(id, {
               content: [{ type: "text", text: `Error: ${err?.message ?? String(err)}` }],
