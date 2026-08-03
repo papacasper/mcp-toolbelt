@@ -38,8 +38,8 @@ export const dashboardHtml = `<!DOCTYPE html>
     <div class="grid" id="summaryGrid"></div>
 
     <section>
-      <h2>Calls by tool</h2>
-      <table id="byToolTable"><thead><tr><th>Tool</th><th>Calls</th><th>Errors</th><th>Avg ms</th></tr></thead><tbody></tbody></table>
+      <h2>Tools &amp; pricing</h2>
+      <table id="byToolTable"><thead><tr><th>Tool</th><th>Price</th><th>Calls</th><th>Errors</th><th>Avg ms</th></tr></thead><tbody></tbody></table>
     </section>
 
     <section>
@@ -96,9 +96,14 @@ export const dashboardHtml = `<!DOCTYPE html>
       ["Payments", d.payments.count],
     ].map(([label, value]) => \`<div class="card"><div class="label">\${label}</div><div class="value">\${value}</div></div>\`).join("");
 
-    document.querySelector("#byToolTable tbody").innerHTML = d.callsByTool.map(t =>
-      \`<tr><td>\${t.tool}</td><td>\${t.n}</td><td>\${t.errors}</td><td>\${Math.round(t.avg_ms)}</td></tr>\`
-    ).join("") || '<tr><td colspan="4" class="muted">No calls yet</td></tr>';
+    const statsByTool = Object.fromEntries(d.callsByTool.map(t => [t.tool, t]));
+    const pricing = d.pricing || {};
+    const allTools = [...new Set([...Object.keys(pricing), ...Object.keys(statsByTool)])].sort();
+    document.querySelector("#byToolTable tbody").innerHTML = allTools.map(name => {
+      const t = statsByTool[name];
+      const price = pricing[name] || "—";
+      return \`<tr><td>\${name}</td><td>\${price}</td><td>\${t ? t.n : 0}</td><td>\${t ? t.errors : 0}</td><td>\${t ? Math.round(t.avg_ms) : "—"}</td></tr>\`;
+    }).join("") || '<tr><td colspan="5" class="muted">No tools configured</td></tr>';
 
     document.querySelector("#paymentsTable tbody").innerHTML = d.recentPayments.map(p =>
       \`<tr><td>\${fmtTs(p.ts)}</td><td>\${p.tool}</td><td>\${short(p.payer)}</td><td>\${short(p.tx_hash)}</td><td>\${p.network || "—"}</td></tr>\`

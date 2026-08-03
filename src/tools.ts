@@ -337,6 +337,7 @@ async function scanPorts(host: string, ports: number[], timeoutMs = 2500) {
 
 export const tools = {
   url_to_markdown: {
+    price: "$0.0001",
     description: "Fetch a URL and return its main text content as clean, readable plain text/markdown-ish output. Strips scripts, styles, and HTML tags.",
     inputSchema: {
       type: "object",
@@ -355,6 +356,7 @@ export const tools = {
   },
 
   seo_audit: {
+    price: "$0.0002",
     description: "Fetch a URL and run a basic SEO audit: title, meta description, H1 count, word count, and robots.txt/sitemap.xml presence.",
     inputSchema: {
       type: "object",
@@ -401,6 +403,7 @@ export const tools = {
   },
 
   check_robots_sitemap: {
+    price: "$0.0001",
     description: "Check whether a site has a valid robots.txt and sitemap.xml, and return their raw contents (truncated).",
     inputSchema: {
       type: "object",
@@ -430,6 +433,7 @@ export const tools = {
   },
 
   ssl_cert_check: {
+    price: "$0.0002",
     description: "Connect to a host over TLS and report its certificate's expiry date, days remaining, issuer, and subject.",
     inputSchema: {
       type: "object",
@@ -447,6 +451,7 @@ export const tools = {
   },
 
   domain_health_check: {
+    price: "$0.0005",
     description:
       "Check a domain's registration expiry (via WHOIS) and DNS health: nameservers, A/AAAA, MX, SPF, and DMARC records. Flags common misconfigurations.",
     inputSchema: {
@@ -467,6 +472,7 @@ export const tools = {
   },
 
   broken_link_check: {
+    price: "$0.001",
     description:
       "Crawl a site starting from a URL (same-origin pages only, bounded by maxPages) and check every linked URL for broken status codes. Returns broken links with the page(s) they were found on. Note: some external sites (e.g. social platforms) block automated HEAD/GET requests and may show up as false positives.",
     inputSchema: {
@@ -485,6 +491,7 @@ export const tools = {
   },
 
   check_open_ports: {
+    price: "$0.0003",
     description:
       "TCP-connect scan a host for open ports. Defaults to a list of ~20 common service ports (SSH, HTTP/S, mail, DBs, etc.) if none are given. For checking your own infrastructure's exposure — capped at 100 ports per call.",
     inputSchema: {

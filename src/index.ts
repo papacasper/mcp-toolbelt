@@ -24,21 +24,35 @@ function requireApiKey(c: any): Response | null {
 
 app.get("/dashboard", (c) => c.html(dashboardHtml));
 
+function toolPricing() {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, def]) => [name, (def as any).price ?? X402_PRICE])
+  );
+}
+
 app.get("/dashboard-data", (c) => {
   const unauthorized = requireApiKey(c);
   if (unauthorized) return unauthorized;
-  return c.json(getStats());
+  return c.json({ ...getStats(), pricing: toolPricing() });
 });
 
 // Payment-gated REST entrypoint — one route per tool, priced via x402.
 // Separate from the JSON-RPC endpoint below since x402-hono gates by HTTP path,
 // and MCP's tools/list vs tools/call distinction lives inside a single JSON-RPC body.
 if (X402_PAY_TO) {
+  const perToolRoutes = Object.fromEntries(
+    Object.entries(tools).map(([name, def]) => [
+      `/pay/${name}`,
+      { price: (def as any).price ?? X402_PRICE, network: X402_NETWORK as any },
+    ])
+  );
+
   app.use(
     "/pay/*",
     paymentMiddleware(
       X402_PAY_TO as `0x${string}`,
       {
+        ...perToolRoutes,
         "/pay/*": {
           price: X402_PRICE,
           network: X402_NETWORK as any,
