@@ -1,5 +1,31 @@
 import { fetchText, extractTag, extractMeta, stripHtml, extractLinks, checkLinkStatus, mapWithConcurrency } from "./shared";
 
+function extractOgTag(html: string, property: string): string | null {
+  const m =
+    html.match(new RegExp(`<meta[^>]+property=["']${property}["'][^>]+content=["']([^"']*)["']`, "i")) ||
+    html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+property=["']${property}["']`, "i")) ||
+    html.match(new RegExp(`<meta[^>]+name=["']${property}["'][^>]+content=["']([^"']*)["']`, "i")) ||
+    html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+name=["']${property}["']`, "i"));
+  return m ? m[1].trim() : null;
+}
+
+function extractAnchors(html: string, baseUrl: string): Array<{ text: string; absoluteHref: string }> {
+  const anchors: Array<{ text: string; absoluteHref: string }> = [];
+  const re = /<a\s[^>]*href=["']([^"'#][^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    try {
+      const resolved = new URL(m[1], baseUrl);
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") continue;
+      resolved.hash = "";
+      anchors.push({ text: stripHtml(m[2]), absoluteHref: resolved.toString() });
+    } catch {
+      // skip unparseable hrefs
+    }
+  }
+  return anchors;
+}
+
 async function headExists(url: string): Promise<{ found: boolean; status: number | null; contentType: string | null }> {
   try {
     const res = await fetch(url, { method: "HEAD", redirect: "follow" });
@@ -116,8 +142,9 @@ async function crawlBrokenLinks(
 
 export const tools = {
   seo_audit: {
-    price: "$0.0002",
-    description: "Fetch a URL and run a basic SEO audit: title, meta description, H1 count, word count, and robots.txt/sitemap.xml presence.",
+    price: "$0.0003",
+    description:
+      "Fetch a URL and run an SEO audit: title/meta description length, canonical tag, Open Graph + Twitter Card tags, html lang attribute, viewport meta, heading structure, image alt-text coverage, internal/external link counts and generic-anchor-text detection, robots meta (noindex/nofollow), structured data (JSON-LD) presence, and robots.txt/sitemap.xml presence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,9 +157,44 @@ export const tools = {
       const title = extractTag(html, "title");
       const description = extractMeta(html, "description");
       const h1Matches = html.match(/<h1[\s>]/gi) || [];
+      const h2Matches = html.match(/<h2[\s>]/gi) || [];
+      const h3Matches = html.match(/<h3[\s>]/gi) || [];
       const wordCount = stripHtml(html).split(/\s+/).filter(Boolean).length;
 
+      const canonicalMatch = html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']*)["']/i);
+      const canonical = canonicalMatch ? canonicalMatch[1].trim() : null;
+
+      const langMatch = html.match(/<html[^>]+lang=["']([^"']*)["']/i);
+      const lang = langMatch ? langMatch[1].trim() : null;
+
+      const hasViewport = /<meta[^>]+name=["']viewport["']/i.test(html);
+
+      const ogTitle = extractOgTag(html, "og:title");
+      const ogDescription = extractOgTag(html, "og:description");
+      const ogImage = extractOgTag(html, "og:image");
+      const twitterCard = extractOgTag(html, "twitter:card");
+
+      const robotsMeta = extractMeta(html, "robots");
+      const isNoindex = !!robotsMeta && /noindex/i.test(robotsMeta);
+      const isNofollow = !!robotsMeta && /nofollow/i.test(robotsMeta);
+
+      const imgTags = html.match(/<img\b[^>]*>/gi) || [];
+      const imgsMissingAlt = imgTags.filter((tag) => !/\balt=["'][^"']*["']/i.test(tag)).length;
+
+      const structuredDataBlocks = (html.match(/<script[^>]+type=["']application\/ld\+json["']/gi) || []).length;
+
+      let httpNote: string | null = null;
+      try {
+        if (new URL(url).protocol === "http:") httpNote = "URL uses http:// instead of https://";
+      } catch {}
+
       const origin = new URL(url).origin;
+      const anchors = extractAnchors(html, url);
+      const internalLinks = anchors.filter((a) => a.absoluteHref.startsWith(origin));
+      const externalLinks = anchors.filter((a) => !a.absoluteHref.startsWith(origin));
+      const genericAnchorPattern = /^(click here|here|read more|learn more|link|this page|more)$/i;
+      const genericAnchorCount = anchors.filter((a) => genericAnchorPattern.test(a.text.trim())).length;
+
       const [robotsOk, sitemapOk] = await Promise.all([
         fetch(`${origin}/robots.txt`).then((r) => r.ok).catch(() => false),
         fetch(`${origin}/sitemap.xml`).then((r) => r.ok).catch(() => false),
@@ -145,19 +207,41 @@ export const tools = {
       else if (description.length > 160) issues.push("Meta description longer than 160 characters");
       if (h1Matches.length === 0) issues.push("No <h1> found");
       if (h1Matches.length > 1) issues.push(`Multiple <h1> tags found (${h1Matches.length})`);
+      if (h2Matches.length === 0 && h3Matches.length > 0) issues.push("Has <h3> tags but no <h2> — skipped heading level");
       if (!robotsOk) issues.push("No robots.txt found");
       if (!sitemapOk) issues.push("No sitemap.xml found");
+      if (!canonical) issues.push("Missing canonical tag");
+      if (!lang) issues.push("Missing lang attribute on <html>");
+      if (!hasViewport) issues.push("Missing viewport meta tag");
+      if (!ogTitle) issues.push("Missing og:title");
+      if (!ogDescription) issues.push("Missing og:description");
+      if (!ogImage) issues.push("Missing og:image");
+      if (!twitterCard) issues.push("Missing twitter:card");
+      if (isNoindex) issues.push("Page has robots noindex — will not be indexed");
+      if (isNofollow) issues.push("Page has robots nofollow — outbound links will not pass authority");
+      if (imgsMissingAlt > 0) issues.push(`${imgsMissingAlt} of ${imgTags.length} <img> tags missing alt text`);
+      if (structuredDataBlocks === 0) issues.push("No structured data (JSON-LD) found");
+      if (genericAnchorCount > 0) issues.push(`${genericAnchorCount} links use generic anchor text (e.g. "click here")`);
+      if (httpNote) issues.push(httpNote);
 
       return {
         url,
         title,
         description,
-        h1Count: h1Matches.length,
+        canonical,
+        lang,
+        hasViewport,
+        openGraph: { title: ogTitle, description: ogDescription, image: ogImage, twitterCard },
+        headings: { h1: h1Matches.length, h2: h2Matches.length, h3: h3Matches.length },
         wordCount,
+        images: { total: imgTags.length, missingAlt: imgsMissingAlt },
+        links: { internal: internalLinks.length, external: externalLinks.length, genericAnchorText: genericAnchorCount },
+        robotsMeta: { noindex: isNoindex, nofollow: isNofollow },
+        structuredDataBlocks,
         hasRobotsTxt: robotsOk,
         hasSitemapXml: sitemapOk,
         issues,
-        score: Math.max(0, 100 - issues.length * 12),
+        score: Math.max(0, 100 - issues.length * 6),
       };
     },
   },
