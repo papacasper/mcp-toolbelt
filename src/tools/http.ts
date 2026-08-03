@@ -185,6 +185,34 @@ async function checkPagePerformance(url: string) {
   };
 }
 
+const PROBE_ORIGIN = "https://example.org";
+
+function auditCors(headers: Headers, probeOrigin: string) {
+  const allowOrigin = headers.get("access-control-allow-origin");
+  const allowCreds = headers.get("access-control-allow-credentials");
+  const allowMethods = headers.get("access-control-allow-methods");
+  const allowHeaders = headers.get("access-control-allow-headers");
+
+  const issues: string[] = [];
+  const reflectsOrigin = allowOrigin === probeOrigin;
+  if (allowOrigin === "*" && allowCreds?.toLowerCase() === "true") {
+    issues.push("Access-Control-Allow-Origin: * combined with Allow-Credentials: true — invalid/dangerous combination");
+  }
+  if (reflectsOrigin) {
+    issues.push(`Reflects arbitrary Origin header back (echoed "${probeOrigin}") — effectively allows any origin`);
+  }
+
+  return {
+    allowOrigin,
+    allowCredentials: allowCreds,
+    allowMethods,
+    allowHeaders,
+    reflectsArbitraryOrigin: reflectsOrigin,
+    wildcard: allowOrigin === "*",
+    issues,
+  };
+}
+
 export const tools = {
   url_to_markdown: {
     price: "$0.0001",
@@ -263,6 +291,29 @@ export const tools = {
     },
   },
 
+  cors_policy_check: {
+    price: "$0.0002",
+    description:
+      "Send a probe request with a foreign Origin header to a URL and report its CORS response headers. Flags wildcard-origin + credentials combinations and arbitrary-origin reflection, both common CORS misconfigurations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to probe" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)",
+          Origin: PROBE_ORIGIN,
+        },
+        redirect: "follow",
+      });
+      return { url: res.url, status: res.status, probeOrigin: PROBE_ORIGIN, cors: auditCors(res.headers, PROBE_ORIGIN) };
+    },
+  },
 };
 
 export type ToolName = keyof typeof tools;
