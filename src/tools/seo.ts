@@ -22,6 +22,23 @@ const JSON_LD_REQUIRED_FIELDS: Record<string, string[]> = {
   FAQPage: ["mainEntity"],
 };
 
+function extractSitemapLocs(xml: string): string[] {
+  return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1].trim());
+}
+
+function isSitemapIndex(xml: string): boolean {
+  return /<sitemapindex[\s>]/i.test(xml);
+}
+
+async function fetchSitemapXml(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  return await res.text();
+}
+
 function validateJsonLdBlock(block: any, index: number) {
   const errors: string[] = [];
   const types = Array.isArray(block?.["@type"]) ? block["@type"] : [block?.["@type"]].filter(Boolean);
@@ -278,6 +295,52 @@ export const tools = {
         validCount: results.filter((r) => r.valid).length,
         invalidCount: results.filter((r) => !r.valid).length,
         results,
+      };
+    },
+  },
+
+  sitemap_url_validator: {
+    price: "$0.0005",
+    description:
+      "Parse a site's sitemap.xml (following one level of sitemap-index nesting) and check the HTTP status of every listed URL. Concurrency-limited, capped at 200 URLs checked per call. Reports broken/redirecting URLs found in the sitemap.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL of the sitemap.xml to validate (or any page URL — /sitemap.xml on that origin is used)" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const sitemapUrl = url.endsWith(".xml") ? url : `${new URL(url).origin}/sitemap.xml`;
+      const rootXml = await fetchSitemapXml(sitemapUrl);
+
+      let locs: string[];
+      let sitemapsFollowed = 1;
+      if (isSitemapIndex(rootXml)) {
+        const childSitemaps = extractSitemapLocs(rootXml).slice(0, 20);
+        const childXmls = await mapWithConcurrency(childSitemaps, 5, (u) => fetchSitemapXml(u).catch(() => ""));
+        locs = childXmls.flatMap((xml) => (xml ? extractSitemapLocs(xml) : []));
+        sitemapsFollowed += childSitemaps.length;
+      } else {
+        locs = extractSitemapLocs(rootXml);
+      }
+
+      const uniqueLocs = [...new Set(locs)];
+      const capped = uniqueLocs.slice(0, 200);
+      const statuses = await mapWithConcurrency(capped, 8, (u) => checkLinkStatus(u));
+
+      const broken = capped
+        .map((u, i) => ({ url: u, ...statuses[i] }))
+        .filter((r) => !r.ok);
+
+      return {
+        sitemapUrl,
+        sitemapsFollowed,
+        urlsFound: uniqueLocs.length,
+        urlsChecked: capped.length,
+        urlsTruncated: uniqueLocs.length > capped.length,
+        brokenCount: broken.length,
+        brokenUrls: broken,
       };
     },
   },
