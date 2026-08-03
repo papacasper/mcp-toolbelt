@@ -10,6 +10,7 @@ const X402_PAY_TO = process.env.X402_PAY_TO ?? "";
 const X402_PRICE = process.env.X402_PRICE ?? "$0.0001";
 const X402_NETWORK = process.env.X402_NETWORK ?? "base";
 const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? "https://facilitator.mogami.tech";
+const X402_PUBLIC_BASE_URL = process.env.X402_PUBLIC_BASE_URL ?? "https://papacasper.com/mcp";
 
 const app = new Hono();
 
@@ -43,7 +44,19 @@ if (X402_PAY_TO) {
   const perToolRoutes = Object.fromEntries(
     Object.entries(tools).map(([name, def]) => [
       `/pay/${name}`,
-      { price: (def as any).price ?? X402_PRICE, network: X402_NETWORK as any },
+      {
+        price: (def as any).price ?? X402_PRICE,
+        network: X402_NETWORK as any,
+        config: {
+          description: (def as any).description ?? "",
+          mimeType: "application/json",
+          discoverable: true,
+          resource: `${X402_PUBLIC_BASE_URL}/pay/${name}`,
+          inputSchema: (def as any).inputSchema?.properties
+            ? { bodyType: "json" as const, bodyFields: (def as any).inputSchema.properties }
+            : undefined,
+        },
+      },
     ])
   );
 
