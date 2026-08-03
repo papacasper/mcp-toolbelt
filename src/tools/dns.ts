@@ -111,6 +111,59 @@ async function cymruAsnLookup(ip: string): Promise<{
   return { asn: asn ? `AS${asn}` : null, prefix: prefix ?? null, countryCode: countryCode ?? null, registry: registry ?? null, asName };
 }
 
+const DKIM_SELECTORS = ["default", "google", "selector1", "selector2", "k1", "mail", "dkim", "s1"];
+const DNSBL_ZONES: Record<string, string> = {
+  spamhausZen: "zen.spamhaus.org",
+  spamcop: "bl.spamcop.net",
+  barracuda: "b.barracudacentral.org",
+};
+
+async function probeDkimSelectors(domain: string): Promise<Array<{ selector: string; found: boolean; value: string | null }>> {
+  const results = await Promise.all(
+    DKIM_SELECTORS.map(async (selector) => {
+      const txt = await dns.resolveTxt(`${selector}._domainkey.${domain}`).catch(() => null);
+      const value = txt?.[0]?.join("") ?? null;
+      return { selector, found: !!value, value };
+    })
+  );
+  return results;
+}
+
+function countSpfLookups(spf: string): number {
+  const mechanisms = spf.match(/\b(include|a|mx|ptr|exists|redirect)(:|=|\b)/gi) ?? [];
+  return mechanisms.length;
+}
+
+async function reverseDns(ip: string): Promise<string[]> {
+  return withTimeout(dns.reverse(ip), 4000).catch(() => []);
+}
+
+function isDnsblErrorCode(codes: string[]): boolean {
+  // Spamhaus (and others) return 127.255.255.x for query errors/rate-limiting, not real listings.
+  return codes.every((c) => c.startsWith("127.255.255."));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "ETIMEOUT" })), timeoutMs);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+async function dnsblLookup(ip: string, zone: string): Promise<{ listed: boolean | null; codes: string[] }> {
+  try {
+    const codes = await withTimeout(dns.resolve4(`${reverseIpv4(ip)}.${zone}`), 2500);
+    if (isDnsblErrorCode(codes)) return { listed: null, codes };
+    return { listed: true, codes };
+  } catch (e: any) {
+    if (e?.code === "ENOTFOUND" || e?.code === "ENODATA") return { listed: false, codes: [] };
+    return { listed: null, codes: [] };
+  }
+}
+
 async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
@@ -238,6 +291,76 @@ export const tools = {
       const results = await Promise.all(ips.map(async (ip) => ({ ip, ...(await cymruAsnLookup(ip)) })));
 
       return { host: clean, ips, results };
+    },
+  },
+
+  email_deliverability_check: {
+    price: "$0.0007",
+    description:
+      "Deep-dive email deliverability check for a domain: MX records + reverse-DNS (PTR) on each MX host, common DKIM selector probing, SPF lookup-count (RFC 7208 caps at 10), DMARC policy strength, and DNSBL blacklist lookups (Spamhaus Zen, SpamCop, Barracuda) on MX IPs. Note: public-resolver DNSBL queries are frequently rate-limited or blocked by Spamhaus, so a `listed: null` result means \"unknown\", not \"clean\" — treat null results as inconclusive, not as a clean bill of health.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Bare domain to check, e.g. example.com" },
+      },
+      required: ["domain"],
+    },
+    async run({ domain }: { domain: string }) {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+
+      const mx = await dns.resolveMx(cleanDomain).catch(() => []);
+      const sortedMx = [...mx].sort((a, b) => a.priority - b.priority).slice(0, 5);
+
+      const mxDetails = await Promise.all(
+        sortedMx.map(async (m) => {
+          const ips = (await dns.resolve4(m.exchange).catch(() => [] as string[])).slice(0, 2);
+          const perIp = await Promise.all(
+            ips.map(async (ip) => {
+              const ptr = await reverseDns(ip);
+              const dnsbl = await Promise.all(
+                Object.entries(DNSBL_ZONES).map(async ([name, zone]) => [name, await dnsblLookup(ip, zone)] as const)
+              );
+              return { ip, ptr, dnsbl: Object.fromEntries(dnsbl) };
+            })
+          );
+          return { priority: m.priority, exchange: m.exchange, ips: perIp };
+        })
+      );
+
+      const txt = await dns.resolveTxt(cleanDomain).catch(() => []);
+      const spf = txt.map((r) => r.join("")).find((t) => t.toLowerCase().startsWith("v=spf1")) ?? null;
+      const spfLookupCount = spf ? countSpfLookups(spf) : null;
+
+      const dmarcTxt = await dns.resolveTxt(`_dmarc.${cleanDomain}`).catch(() => []);
+      const dmarc = dmarcTxt.map((r) => r.join("")).find((t) => t.toLowerCase().startsWith("v=dmarc1")) ?? null;
+      const dmarcPolicy = dmarc?.match(/;\s*p=(\w+)/i)?.[1]?.toLowerCase() ?? null;
+
+      const dkimSelectors = await probeDkimSelectors(cleanDomain);
+
+      const issues: string[] = [];
+      if (!sortedMx.length) issues.push("No MX records found");
+      if (!spf) issues.push("No SPF record found");
+      else if (spfLookupCount !== null && spfLookupCount > 10) issues.push(`SPF record has ${spfLookupCount} lookup-triggering mechanisms — exceeds the RFC 7208 limit of 10, which causes a PermError`);
+      if (!dmarc) issues.push("No DMARC record found");
+      else if (dmarcPolicy === "none") issues.push('DMARC policy is "none" — monitoring only, no enforcement against spoofing');
+      if (!dkimSelectors.some((s) => s.found)) issues.push("No DKIM record found under any commonly-used selector (this doesn't rule out a custom selector)");
+      for (const m of mxDetails) {
+        for (const ip of m.ips) {
+          if (!ip.ptr.length) issues.push(`MX host ${m.exchange} (${ip.ip}) has no reverse DNS (PTR) record — many receiving servers penalize this`);
+          for (const [zone, result] of Object.entries(ip.dnsbl)) {
+            if ((result as any).listed === true) issues.push(`MX host ${m.exchange} (${ip.ip}) is listed on ${zone}`);
+          }
+        }
+      }
+
+      return {
+        domain: cleanDomain,
+        mx: mxDetails,
+        spf: { record: spf, lookupCount: spfLookupCount },
+        dmarc: { record: dmarc, policy: dmarcPolicy },
+        dkimSelectorsChecked: dkimSelectors,
+        issues,
+      };
     },
   },
 };
