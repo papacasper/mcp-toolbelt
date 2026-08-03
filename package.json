@@ -5,8 +5,10 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "hono": "^4.6.0",
-    "x402-hono": "^1.2.0"
+    "@x402/core": "2.20.0",
+    "@x402/evm": "2.20.0",
+    "@x402/hono": "2.20.0",
+    "hono": "^4.6.0"
   },
   "devDependencies": {
     "bun-types": "latest"

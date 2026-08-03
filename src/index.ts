@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import { paymentMiddleware } from "x402-hono";
+import { paymentMiddlewareFromConfig } from "@x402/hono";
+import { HTTPFacilitatorClient } from "@x402/core/http";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { tools } from "./tools";
 import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
 import { dashboardHtml } from "./dashboard";
@@ -8,8 +10,8 @@ const PORT = Number(process.env.PORT ?? 3457);
 const API_KEY = process.env.MCP_API_KEY ?? "";
 const X402_PAY_TO = process.env.X402_PAY_TO ?? "";
 const X402_PRICE = process.env.X402_PRICE ?? "$0.0001";
-const X402_NETWORK = process.env.X402_NETWORK ?? "base";
-const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? "https://facilitator.mogami.tech";
+const X402_NETWORK = process.env.X402_NETWORK ?? "eip155:8453";
+const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? "https://facilitator.xpay.sh";
 const X402_PUBLIC_BASE_URL = process.env.X402_PUBLIC_BASE_URL ?? "https://papacasper.com/mcp";
 
 const app = new Hono();
@@ -38,40 +40,42 @@ app.get("/dashboard-data", (c) => {
 });
 
 // Payment-gated REST entrypoint — one route per tool, priced via x402.
-// Separate from the JSON-RPC endpoint below since x402-hono gates by HTTP path,
+// Separate from the JSON-RPC endpoint below since the x402 middleware gates by HTTP path,
 // and MCP's tools/list vs tools/call distinction lives inside a single JSON-RPC body.
 if (X402_PAY_TO) {
   const perToolRoutes = Object.fromEntries(
     Object.entries(tools).map(([name, def]) => [
       `/pay/${name}`,
       {
-        price: (def as any).price ?? X402_PRICE,
-        network: X402_NETWORK as any,
-        config: {
-          description: (def as any).description ?? "",
-          mimeType: "application/json",
-          discoverable: true,
-          resource: `${X402_PUBLIC_BASE_URL}/pay/${name}`,
-          inputSchema: (def as any).inputSchema?.properties
-            ? { bodyType: "json" as const, bodyFields: (def as any).inputSchema.properties }
-            : undefined,
+        accepts: {
+          scheme: "exact",
+          payTo: X402_PAY_TO,
+          price: (def as any).price ?? X402_PRICE,
+          network: X402_NETWORK as any,
         },
+        resource: `${X402_PUBLIC_BASE_URL}/pay/${name}`,
+        description: (def as any).description ?? "",
+        mimeType: "application/json",
       },
     ])
   );
 
   app.use(
     "/pay/*",
-    paymentMiddleware(
-      X402_PAY_TO as `0x${string}`,
+    paymentMiddlewareFromConfig(
       {
         ...perToolRoutes,
         "/pay/*": {
-          price: X402_PRICE,
-          network: X402_NETWORK as any,
+          accepts: {
+            scheme: "exact",
+            payTo: X402_PAY_TO,
+            price: X402_PRICE,
+            network: X402_NETWORK as any,
+          },
         },
       },
-      { url: X402_FACILITATOR_URL }
+      new HTTPFacilitatorClient({ url: X402_FACILITATOR_URL }),
+      [{ network: X402_NETWORK as any, server: new ExactEvmScheme() }]
     )
   );
 
