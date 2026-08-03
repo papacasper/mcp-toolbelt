@@ -75,7 +75,7 @@ export const dashboardHtml = `<!DOCTYPE html>
 
   async function load(key) {
     try {
-      const res = await fetch("/dashboard-data", { headers: key ? { "x-api-key": key } : {} });
+      const res = await fetch("dashboard-data", { headers: key ? { "x-api-key": key } : {} });
       if (!res.ok) { alert("Unauthorized — check the API key."); return; }
       const data = await res.json();
       localStorage.setItem("mcp_dashboard_key", key);
