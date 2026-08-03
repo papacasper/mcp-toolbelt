@@ -418,6 +418,70 @@ async function scanPorts(host: string, ports: number[], timeoutMs = 2500) {
   };
 }
 
+async function traceRedirectChain(startUrl: string, maxHops = 10) {
+  const hops: Array<{ url: string; status: number; location: string | null }> = [];
+  const seen = new Set<string>();
+  let current = startUrl;
+
+  while (hops.length < maxHops) {
+    if (seen.has(current)) {
+      hops.push({ url: current, status: 0, location: null });
+      return {
+        startUrl,
+        hops,
+        finalUrl: current,
+        redirectCount: hops.length - 1,
+        issues: ["Redirect loop detected — a URL was visited twice"],
+      };
+    }
+    seen.add(current);
+
+    let res: Response;
+    try {
+      res = await fetch(current, {
+        method: "HEAD",
+        redirect: "manual",
+        headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+      });
+    } catch (e: any) {
+      hops.push({ url: current, status: 0, location: null });
+      return {
+        startUrl,
+        hops,
+        finalUrl: current,
+        redirectCount: hops.length - 1,
+        issues: [`Request failed: ${e?.message ?? String(e)}`],
+      };
+    }
+
+    const isRedirect = res.status >= 300 && res.status < 400;
+    const location = isRedirect ? res.headers.get("location") : null;
+    hops.push({ url: current, status: res.status, location });
+
+    if (!isRedirect || !location) break;
+    current = new URL(location, current).toString();
+  }
+
+  const issues: string[] = [];
+  if (hops.length >= maxHops && hops[hops.length - 1].location) {
+    issues.push(`Hit the ${maxHops}-hop limit without resolving — possible redirect chain that's too long`);
+  }
+  for (let i = 0; i < hops.length - 1; i++) {
+    if (hops[i].url.startsWith("https://") && hops[i + 1]?.url.startsWith("http://")) {
+      issues.push(`Downgrades from HTTPS to HTTP between hop ${i + 1} and ${i + 2}`);
+    }
+  }
+  if (hops.length > 3) issues.push(`${hops.length - 1} redirects — consider shortening the chain for SEO/performance`);
+
+  return {
+    startUrl,
+    hops,
+    finalUrl: hops[hops.length - 1]?.url ?? startUrl,
+    redirectCount: Math.max(0, hops.length - 1),
+    issues,
+  };
+}
+
 export const tools = {
   url_to_markdown: {
     price: "$0.0001",
@@ -621,6 +685,22 @@ export const tools = {
         score,
         checks,
       };
+    },
+  },
+
+  redirect_chain_check: {
+    price: "$0.0002",
+    description:
+      "Follow a URL through every HTTP redirect hop and report the full chain, final destination, and issues like redirect loops, too many hops, or HTTPS-to-HTTP downgrades.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The starting URL to trace" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      return traceRedirectChain(url);
     },
   },
 };
