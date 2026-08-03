@@ -9,6 +9,40 @@ async function headExists(url: string): Promise<{ found: boolean; status: number
   }
 }
 
+const JSON_LD_REQUIRED_FIELDS: Record<string, string[]> = {
+  Article: ["headline", "datePublished"],
+  NewsArticle: ["headline", "datePublished"],
+  BlogPosting: ["headline", "datePublished"],
+  Product: ["name"],
+  Organization: ["name"],
+  BreadcrumbList: ["itemListElement"],
+  WebSite: ["name", "url"],
+  LocalBusiness: ["name", "address"],
+  Person: ["name"],
+  FAQPage: ["mainEntity"],
+};
+
+function validateJsonLdBlock(block: any, index: number) {
+  const errors: string[] = [];
+  const types = Array.isArray(block?.["@type"]) ? block["@type"] : [block?.["@type"]].filter(Boolean);
+
+  if (!block?.["@context"]) errors.push("Missing @context");
+  else if (!String(block["@context"]).includes("schema.org")) errors.push("@context does not reference schema.org");
+  if (!types.length) errors.push("Missing @type");
+
+  for (const type of types) {
+    const required = JSON_LD_REQUIRED_FIELDS[type];
+    if (!required) continue;
+    for (const field of required) {
+      if (block[field] === undefined || block[field] === null || block[field] === "") {
+        errors.push(`@type "${type}" is missing required field "${field}"`);
+      }
+    }
+  }
+
+  return { index, types, valid: errors.length === 0, errors };
+}
+
 async function crawlBrokenLinks(
   startUrl: string,
   maxPages: number,
@@ -208,6 +242,42 @@ export const tools = {
         manifest,
         themeColor,
         issues,
+      };
+    },
+  },
+
+  json_ld_schema_validator: {
+    price: "$0.0002",
+    description:
+      "Fetch a URL, extract every JSON-LD (<script type=\"application/ld+json\">) block, and validate basic structure — @context/@type presence plus required fields for common schema.org types (Article, Product, Organization, WebSite, LocalBusiness, BreadcrumbList, FAQPage). Reports per-block errors rather than failing the whole call on one bad block.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to check" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const html = await fetchText(url);
+      const blocks = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+
+      const results = blocks.map((m, i) => {
+        try {
+          const parsed = JSON.parse(m[1].trim());
+          const items = Array.isArray(parsed) ? parsed : (parsed["@graph"] ?? [parsed]);
+          return items.map((item: any, j: number) => validateJsonLdBlock(item, blocks.length > 1 ? i : j));
+        } catch (e: any) {
+          return [{ index: i, types: [], valid: false, errors: [`Invalid JSON: ${e?.message ?? String(e)}`] }];
+        }
+      }).flat();
+
+      return {
+        url,
+        blocksFound: blocks.length,
+        entriesValidated: results.length,
+        validCount: results.filter((r) => r.valid).length,
+        invalidCount: results.filter((r) => !r.valid).length,
+        results,
       };
     },
   },
