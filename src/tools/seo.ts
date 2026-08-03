@@ -1,5 +1,14 @@
 import { fetchText, extractTag, extractMeta, stripHtml, extractLinks, checkLinkStatus, mapWithConcurrency } from "./shared";
 
+async function headExists(url: string): Promise<{ found: boolean; status: number | null; contentType: string | null }> {
+  try {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    return { found: res.ok, status: res.status, contentType: res.headers.get("content-type") };
+  } catch {
+    return { found: false, status: null, contentType: null };
+  }
+}
+
 async function crawlBrokenLinks(
   startUrl: string,
   maxPages: number,
@@ -148,6 +157,58 @@ export const tools = {
     async run({ url, maxPages, checkExternal }: { url: string; maxPages?: number; checkExternal?: boolean }) {
       const cappedMaxPages = Math.max(1, Math.min(maxPages ?? 20, 50));
       return crawlBrokenLinks(url, cappedMaxPages, checkExternal ?? true);
+    },
+  },
+
+  favicon_manifest_check: {
+    price: "$0.0001",
+    description:
+      "Check a site for favicon, apple-touch-icon, web app manifest, and theme-color presence — a quick completeness check for browser/OS chrome and PWA metadata.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Any URL on the site to check (origin is derived from it)" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const origin = new URL(url).origin;
+      const html = await fetchText(url).catch(() => "");
+
+      const iconHref = html.match(/<link[^>]+rel=["'](?:shortcut icon|icon)["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'](?:shortcut icon|icon)["']/i)?.[1]
+        ?? null;
+      const appleTouchHref = html.match(/<link[^>]+rel=["']apple-touch-icon["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']apple-touch-icon["']/i)?.[1]
+        ?? null;
+      const manifestHref = html.match(/<link[^>]+rel=["']manifest["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i)?.[1]
+        ?? null;
+      const themeColor = extractMeta(html, "theme-color");
+
+      const [favicon, appleTouchIcon, manifest, defaultFaviconIco] = await Promise.all([
+        iconHref ? headExists(new URL(iconHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
+        appleTouchHref ? headExists(new URL(appleTouchHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
+        manifestHref ? headExists(new URL(manifestHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
+        headExists(`${origin}/favicon.ico`),
+      ]);
+
+      const effectiveFavicon = favicon.found ? favicon : defaultFaviconIco;
+
+      const issues: string[] = [];
+      if (!effectiveFavicon.found) issues.push("No favicon found (neither a <link rel=icon> nor /favicon.ico)");
+      if (!appleTouchIcon.found) issues.push("No apple-touch-icon found — iOS home-screen bookmarks will use a low-quality fallback");
+      if (!manifest.found) issues.push("No web app manifest found — site won't be installable as a PWA");
+      if (!themeColor) issues.push("No theme-color meta tag — browser chrome won't match site branding on mobile");
+
+      return {
+        url,
+        favicon: effectiveFavicon,
+        appleTouchIcon,
+        manifest,
+        themeColor,
+        issues,
+      };
     },
   },
 };
