@@ -83,6 +83,34 @@ async function lookupDomainWhois(domain: string): Promise<{
   };
 }
 
+function reverseIpv4(ip: string): string {
+  return ip.split(".").reverse().join(".");
+}
+
+async function cymruAsnLookup(ip: string): Promise<{
+  asn: string | null;
+  prefix: string | null;
+  countryCode: string | null;
+  registry: string | null;
+  asName: string | null;
+}> {
+  const origin = await dns.resolveTxt(`${reverseIpv4(ip)}.origin.asn.cymru.com`).catch(() => null);
+  const originLine = origin?.[0]?.join("") ?? null;
+  if (!originLine) return { asn: null, prefix: null, countryCode: null, registry: null, asName: null };
+
+  const [asnRaw, prefix, countryCode, registry] = originLine.split("|").map((s) => s.trim());
+  const asn = asnRaw?.split(" ")[0] ?? null;
+
+  let asName: string | null = null;
+  if (asn) {
+    const nameTxt = await dns.resolveTxt(`AS${asn}.asn.cymru.com`).catch(() => null);
+    const nameLine = nameTxt?.[0]?.join("") ?? null;
+    asName = nameLine?.split("|").pop()?.trim() ?? null;
+  }
+
+  return { asn: asn ? `AS${asn}` : null, prefix: prefix ?? null, countryCode: countryCode ?? null, registry: registry ?? null, asName };
+}
+
 async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
@@ -186,6 +214,30 @@ export const tools = {
         results,
         issues: propagated ? [] : ["Resolvers disagree on the answer — DNS change may still be propagating, or resolvers are caching stale records"],
       };
+    },
+  },
+
+  ip_geolocation_asn_lookup: {
+    price: "$0.0003",
+    description:
+      "Resolve a hostname to its IPv4 addresses and look up each one's ASN, network prefix, country code, and network owner via Team Cymru's DNS-based WHOIS service (no API key). Country-level only — not city/street geolocation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Hostname or bare IPv4 address to look up" },
+      },
+      required: ["host"],
+    },
+    async run({ host }: { host: string }) {
+      const clean = host.replace(/^https?:\/\//, "").split("/")[0];
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(clean);
+      const ips = isIp ? [clean] : await dns.resolve4(clean).catch(() => [] as string[]);
+
+      if (!ips.length) throw new Error(`Could not resolve any IPv4 address for ${clean}`);
+
+      const results = await Promise.all(ips.map(async (ip) => ({ ip, ...(await cymruAsnLookup(ip)) })));
+
+      return { host: clean, ips, results };
     },
   },
 };
