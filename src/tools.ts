@@ -482,6 +482,44 @@ async function traceRedirectChain(startUrl: string, maxHops = 10) {
   };
 }
 
+async function checkPagePerformance(url: string) {
+  const started = performance.now();
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)",
+      "Accept-Encoding": "gzip, br",
+    },
+    redirect: "follow",
+  });
+  const ttfbMs = Math.round(performance.now() - started);
+
+  const body = await res.arrayBuffer();
+  const totalMs = Math.round(performance.now() - started);
+  const bodyBytes = body.byteLength;
+
+  const contentEncoding = res.headers.get("content-encoding");
+  const cacheControl = res.headers.get("cache-control");
+  const contentLength = res.headers.get("content-length");
+
+  const issues: string[] = [];
+  if (!contentEncoding) issues.push("No compression (gzip/br) — response is sent uncompressed");
+  if (!cacheControl) issues.push("No Cache-Control header — browsers/CDNs can't cache the response");
+  if (bodyBytes > 2_000_000) issues.push(`Large response body (${(bodyBytes / 1_000_000).toFixed(1)}MB) — consider reducing payload size`);
+  if (ttfbMs > 800) issues.push(`Slow time-to-first-byte (${ttfbMs}ms) — server response is slow`);
+
+  return {
+    url: res.url,
+    status: res.status,
+    ttfbMs,
+    totalMs,
+    bodyBytes,
+    contentLengthHeader: contentLength ? Number(contentLength) : null,
+    contentEncoding,
+    cacheControl,
+    issues,
+  };
+}
+
 export const tools = {
   url_to_markdown: {
     price: "$0.0001",
@@ -701,6 +739,22 @@ export const tools = {
     },
     async run({ url }: { url: string }) {
       return traceRedirectChain(url);
+    },
+  },
+
+  page_performance_check: {
+    price: "$0.0002",
+    description:
+      "Fetch a URL and measure time-to-first-byte, total fetch time, and response size. Flags missing compression, missing Cache-Control, oversized payloads, and slow TTFB.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to measure" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      return checkPagePerformance(url);
     },
   },
 };
