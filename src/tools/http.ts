@@ -314,6 +314,59 @@ export const tools = {
       return { url: res.url, status: res.status, probeOrigin: PROBE_ORIGIN, cors: auditCors(res.headers, PROBE_ORIGIN) };
     },
   },
+
+  tech_stack_fingerprint: {
+    price: "$0.0002",
+    description:
+      "Fetch a URL and fingerprint its likely tech stack from response headers (server, x-powered-by, x-generator) and HTML markers (generator meta tag, framework/CMS-specific script or class patterns). Best-effort — not exhaustive, no additional paths are probed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to fingerprint" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+        redirect: "follow",
+      });
+      const html = await res.text();
+
+      const headerHints: Record<string, string> = {};
+      for (const h of ["server", "x-powered-by", "x-generator", "x-drupal-cache", "x-varnish"]) {
+        const v = res.headers.get(h);
+        if (v) headerHints[h] = v;
+      }
+
+      const generatorMeta = html.match(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']*)["']/i)?.[1] ?? null;
+
+      const markers: Array<{ label: string; pattern: RegExp }> = [
+        { label: "WordPress", pattern: /wp-content|wp-includes|\/wp-json\// },
+        { label: "Next.js", pattern: /__NEXT_DATA__|_next\/static/ },
+        { label: "React", pattern: /data-reactroot|react-dom/ },
+        { label: "Vue", pattern: /data-v-app|__VUE__/ },
+        { label: "Shopify", pattern: /cdn\.shopify\.com|Shopify\.theme/ },
+        { label: "Squarespace", pattern: /squarespace-cdn|static1\.squarespace/ },
+        { label: "Wix", pattern: /wix\.com|wixstatic\.com/ },
+        { label: "Webflow", pattern: /webflow\.com|data-wf-site/ },
+        { label: "Ghost", pattern: /ghost-url|content\/images\/\d{4}\// },
+        { label: "Laravel", pattern: /laravel_session|XSRF-TOKEN/ },
+        { label: "Django", pattern: /csrfmiddlewaretoken/ },
+        { label: "Astro", pattern: /astro-island|data-astro-cid/ },
+      ];
+      const htmlMatches = markers.filter((m) => m.pattern.test(html)).map((m) => m.label);
+
+      return {
+        url: res.url,
+        status: res.status,
+        headerHints,
+        generatorMeta,
+        htmlMatches,
+        note: "Best-effort fingerprinting from public headers/markup only.",
+      };
+    },
+  },
 };
 
 export type ToolName = keyof typeof tools;
