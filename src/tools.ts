@@ -307,6 +307,34 @@ async function crawlBrokenLinks(
   };
 }
 
+const COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 27017];
+
+function checkPort(host: string, port: number, timeoutMs = 2500): Promise<{ port: number; state: "open" | "closed" | "filtered" }> {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host, port, timeout: timeoutMs });
+    const finish = (state: "open" | "closed" | "filtered") => {
+      socket.destroy();
+      resolve({ port, state });
+    };
+    socket.on("connect", () => finish("open"));
+    socket.on("timeout", () => finish("filtered"));
+    socket.on("error", (err: any) => finish(err?.code === "ECONNREFUSED" ? "closed" : "filtered"));
+  });
+}
+
+async function scanPorts(host: string, ports: number[], timeoutMs = 2500) {
+  const results = await mapWithConcurrency(ports, 20, (port) => checkPort(host, port, timeoutMs));
+  results.sort((a, b) => a.port - b.port);
+  return {
+    host,
+    portsScanned: results.length,
+    open: results.filter((r) => r.state === "open").map((r) => r.port),
+    closed: results.filter((r) => r.state === "closed").map((r) => r.port),
+    filtered: results.filter((r) => r.state === "filtered").map((r) => r.port),
+    results,
+  };
+}
+
 export const tools = {
   url_to_markdown: {
     description: "Fetch a URL and return its main text content as clean, readable plain text/markdown-ish output. Strips scripts, styles, and HTML tags.",
@@ -453,6 +481,30 @@ export const tools = {
     async run({ url, maxPages, checkExternal }: { url: string; maxPages?: number; checkExternal?: boolean }) {
       const cappedMaxPages = Math.max(1, Math.min(maxPages ?? 20, 50));
       return crawlBrokenLinks(url, cappedMaxPages, checkExternal ?? true);
+    },
+  },
+
+  check_open_ports: {
+    description:
+      "TCP-connect scan a host for open ports. Defaults to a list of ~20 common service ports (SSH, HTTP/S, mail, DBs, etc.) if none are given. For checking your own infrastructure's exposure — capped at 100 ports per call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Hostname or IP to scan (no scheme)" },
+        ports: {
+          type: "array",
+          items: { type: "number" },
+          description: "Specific ports to check. Defaults to a common-ports list. Max 100 ports per call.",
+        },
+      },
+      required: ["host"],
+    },
+    async run({ host, ports }: { host: string; ports?: number[] }) {
+      const cleanHost = host.replace(/^https?:\/\//, "").split("/")[0];
+      const list = (ports?.length ? ports : COMMON_PORTS)
+        .filter((p) => Number.isInteger(p) && p > 0 && p <= 65535)
+        .slice(0, 100);
+      return scanPorts(cleanHost, list);
     },
   },
 };
