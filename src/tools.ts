@@ -205,6 +205,108 @@ async function fetchText(url: string): Promise<string> {
   return await res.text();
 }
 
+function extractLinks(html: string, baseUrl: string): string[] {
+  const links = new Set<string>();
+  const re = /<a\s[^>]*href=["']([^"'#][^"']*)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    try {
+      const resolved = new URL(m[1], baseUrl);
+      if (resolved.protocol === "http:" || resolved.protocol === "https:") {
+        resolved.hash = "";
+        links.add(resolved.toString());
+      }
+    } catch {
+      // skip unparseable hrefs (mailto:, javascript:, malformed, etc.)
+    }
+  }
+  return [...links];
+}
+
+async function checkLinkStatus(url: string, timeoutMs = 8000): Promise<{ status: number | null; ok: boolean; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let res = await fetch(url, { method: "HEAD", redirect: "follow", signal: controller.signal });
+    if (res.status === 405 || res.status === 501) {
+      res = await fetch(url, { method: "GET", redirect: "follow", signal: controller.signal });
+    }
+    return { status: res.status, ok: res.ok };
+  } catch (e: any) {
+    return { status: null, ok: false, error: e?.name === "AbortError" ? "timeout" : (e?.message ?? String(e)) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function crawlBrokenLinks(
+  startUrl: string,
+  maxPages: number,
+  checkExternal: boolean
+) {
+  const start = new URL(startUrl);
+  const origin = start.origin;
+
+  const visited = new Set<string>();
+  const queue: string[] = [start.toString()];
+  const linkSources = new Map<string, Set<string>>();
+
+  while (queue.length && visited.size < maxPages) {
+    const page = queue.shift()!;
+    if (visited.has(page)) continue;
+    visited.add(page);
+
+    let html: string;
+    try {
+      html = await fetchText(page);
+    } catch {
+      continue;
+    }
+
+    for (const link of extractLinks(html, page)) {
+      if (!linkSources.has(link)) linkSources.set(link, new Set());
+      linkSources.get(link)!.add(page);
+
+      const linkUrl = new URL(link);
+      const sameOrigin = linkUrl.origin === origin;
+      if (sameOrigin && !visited.has(link) && !queue.includes(link) && visited.size + queue.length < maxPages) {
+        queue.push(link);
+      }
+    }
+  }
+
+  const allLinks = [...linkSources.keys()].filter((link) => checkExternal || new URL(link).origin === origin);
+  const capped = allLinks.slice(0, 200);
+
+  const statuses = await mapWithConcurrency(capped, 8, (link) => checkLinkStatus(link));
+
+  const broken = capped
+    .map((link, i) => ({ url: link, ...statuses[i], foundOn: [...(linkSources.get(link) ?? [])] }))
+    .filter((r) => !r.ok);
+
+  return {
+    pagesCrawled: visited.size,
+    linksChecked: capped.length,
+    linksTruncated: allLinks.length > capped.length,
+    brokenCount: broken.length,
+    brokenLinks: broken,
+  };
+}
+
 export const tools = {
   url_to_markdown: {
     description: "Fetch a URL and return its main text content as clean, readable plain text/markdown-ish output. Strips scripts, styles, and HTML tags.",
@@ -333,6 +435,24 @@ export const tools = {
         lookupDnsHealth(cleanDomain),
       ]);
       return { domain: cleanDomain, whois, dns: dnsHealth };
+    },
+  },
+
+  broken_link_check: {
+    description:
+      "Crawl a site starting from a URL (same-origin pages only, bounded by maxPages) and check every linked URL for broken status codes. Returns broken links with the page(s) they were found on. Note: some external sites (e.g. social platforms) block automated HEAD/GET requests and may show up as false positives.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Starting URL to crawl" },
+        maxPages: { type: "number", description: "Max same-origin pages to crawl (default 20, capped at 50)" },
+        checkExternal: { type: "boolean", description: "Also check links pointing off-site (default true; crawling never follows off-site links)" },
+      },
+      required: ["url"],
+    },
+    async run({ url, maxPages, checkExternal }: { url: string; maxPages?: number; checkExternal?: boolean }) {
+      const cappedMaxPages = Math.max(1, Math.min(maxPages ?? 20, 50));
+      return crawlBrokenLinks(url, cappedMaxPages, checkExternal ?? true);
     },
   },
 };
