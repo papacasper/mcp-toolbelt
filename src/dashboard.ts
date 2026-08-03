@@ -68,7 +68,9 @@ export const dashboardHtml = `<!DOCTYPE html>
   function fmtTs(ts) { return new Date(ts).toLocaleString(); }
   function fmtDuration(ms) {
     const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    if (h < 1) return m + "m";
     return h + "h " + m + "m";
   }
   function short(str) { return str ? str.slice(0, 6) + "…" + str.slice(-4) : "—"; }
