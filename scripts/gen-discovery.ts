@@ -7,15 +7,18 @@ import { tools } from "../src/tools";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const PUBLIC_BASE_URL = "https://papacasper.com/mcp";
+const ORIGIN = "https://papacasper.com";
+const PUBLIC_BASE_URL = `${ORIGIN}/mcp`;
 const SITE_PUBLIC_DIR = join(import.meta.dir, "..", "..", "site", "public");
 
 const toolEntries = Object.entries(tools) as Array<[string, any]>;
 
+// Paths bake in the /mcp prefix directly (rather than relying on `servers[].url`) since
+// x402scan's live prober hits `origin + path` and ignores the servers path component.
 const paths: Record<string, any> = {};
 for (const [name, def] of toolEntries) {
   const price = String(def.price ?? "$0.0001").replace(/^\$/, "");
-  paths[`/pay/${name}`] = {
+  paths[`/mcp/pay/${name}`] = {
     post: {
       summary: def.description ?? name,
       operationId: name,
@@ -49,7 +52,7 @@ const openapi = {
       "Call GET /openapi.json for the full list of tools, their input schemas, and prices.",
     contact: { email: "contact@papacasper.com" },
   },
-  servers: [{ url: PUBLIC_BASE_URL }],
+  servers: [{ url: ORIGIN }],
   paths,
 };
 
