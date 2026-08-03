@@ -1,5 +1,40 @@
-import { promises as dns } from "node:dns";
+import { promises as dns, Resolver } from "node:dns";
 import { whoisQuery, extractWhoisField } from "./shared";
+
+const PUBLIC_RESOLVERS: Record<string, string> = {
+  google: "8.8.8.8",
+  cloudflare: "1.1.1.1",
+  quad9: "9.9.9.9",
+  opendns: "208.67.222.222",
+};
+
+type RecordType = "A" | "AAAA" | "MX" | "TXT" | "NS" | "CNAME";
+
+function resolveWith(server: string, domain: string, type: RecordType): Promise<string[]> {
+  return new Promise((resolve) => {
+    const resolver = new Resolver();
+    resolver.setServers([server]);
+    resolver.setTimeout?.(5000);
+    const cb = (err: any, records: any) => {
+      if (err) return resolve([]);
+      if (type === "MX") {
+        resolve((records as any[]).sort((a, b) => a.priority - b.priority).map((r) => `${r.priority} ${r.exchange}`));
+      } else if (type === "TXT") {
+        resolve((records as string[][]).map((r) => r.join("")));
+      } else {
+        resolve(records as string[]);
+      }
+    };
+    switch (type) {
+      case "A": return resolver.resolve4(domain, cb);
+      case "AAAA": return resolver.resolve6(domain, cb);
+      case "MX": return resolver.resolveMx(domain, cb);
+      case "TXT": return resolver.resolveTxt(domain, cb);
+      case "NS": return resolver.resolveNs(domain, cb);
+      case "CNAME": return resolver.resolveCname(domain, cb);
+    }
+  });
+}
 
 async function lookupDomainWhois(domain: string): Promise<{
   registrar: string | null;
@@ -110,6 +145,47 @@ export const tools = {
         lookupDnsHealth(cleanDomain),
       ]);
       return { domain: cleanDomain, whois, dns: dnsHealth };
+    },
+  },
+
+  dns_propagation_check: {
+    price: "$0.0003",
+    description:
+      "Query a DNS record for a domain against several major public resolvers (Google, Cloudflare, Quad9, OpenDNS) in parallel and compare the answers. Flags mismatches, which usually mean propagation is still in progress after a DNS change.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Bare domain to query, e.g. example.com" },
+        recordType: { type: "string", description: "Record type: A, AAAA, MX, TXT, NS, or CNAME (default A)" },
+      },
+      required: ["domain"],
+    },
+    async run({ domain, recordType }: { domain: string; recordType?: string }) {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+      const type = ((recordType ?? "A").toUpperCase()) as RecordType;
+      if (!["A", "AAAA", "MX", "TXT", "NS", "CNAME"].includes(type)) {
+        throw new Error(`Unsupported recordType: ${recordType}. Use A, AAAA, MX, TXT, NS, or CNAME.`);
+      }
+
+      const entries = Object.entries(PUBLIC_RESOLVERS);
+      const answers = await Promise.all(entries.map(([, server]) => resolveWith(server, cleanDomain, type)));
+
+      const results = entries.map(([name, server], i) => ({
+        resolver: name,
+        server,
+        answers: [...answers[i]].sort(),
+      }));
+
+      const signatures = new Set(results.map((r) => JSON.stringify(r.answers)));
+      const propagated = signatures.size <= 1;
+
+      return {
+        domain: cleanDomain,
+        recordType: type,
+        propagated,
+        results,
+        issues: propagated ? [] : ["Resolvers disagree on the answer — DNS change may still be propagating, or resolvers are caching stale records"],
+      };
     },
   },
 };
