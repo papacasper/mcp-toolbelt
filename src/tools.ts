@@ -1,3 +1,47 @@
+import { connect as tlsConnect } from "node:tls";
+
+function checkCertExpiry(hostname: string, port: number, timeoutMs = 8000): Promise<{
+  subject: string;
+  issuer: string;
+  validFrom: string;
+  validTo: string;
+  daysRemaining: number;
+  expired: boolean;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = tlsConnect(
+      { host: hostname, port, servername: hostname, timeout: timeoutMs },
+      () => {
+        try {
+          const cert = socket.getPeerCertificate();
+          socket.end();
+          if (!cert || !cert.valid_to) {
+            reject(new Error("No certificate presented"));
+            return;
+          }
+          const validTo = new Date(cert.valid_to);
+          const daysRemaining = Math.ceil((validTo.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+          resolve({
+            subject: cert.subject?.CN ?? hostname,
+            issuer: cert.issuer?.CN ?? "unknown",
+            validFrom: new Date(cert.valid_from).toISOString(),
+            validTo: validTo.toISOString(),
+            daysRemaining,
+            expired: daysRemaining < 0,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+    socket.on("timeout", () => {
+      socket.destroy();
+      reject(new Error(`Connection to ${hostname}:${port} timed out`));
+    });
+    socket.on("error", reject);
+  });
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -132,6 +176,23 @@ export const tools = {
         safeFetch("/sitemap.xml"),
       ]);
       return { origin, robots, sitemap };
+    },
+  },
+
+  ssl_cert_check: {
+    description: "Connect to a host over TLS and report its certificate's expiry date, days remaining, issuer, and subject.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hostname: { type: "string", description: "Hostname to check, e.g. papacasper.com (no scheme/path)" },
+        port: { type: "number", description: "TLS port to connect to (default 443)" },
+      },
+      required: ["hostname"],
+    },
+    async run({ hostname, port }: { hostname: string; port?: number }) {
+      const cleanHost = hostname.replace(/^https?:\/\//, "").split("/")[0];
+      const result = await checkCertExpiry(cleanHost, port ?? 443);
+      return { hostname: cleanHost, port: port ?? 443, ...result };
     },
   },
 };
