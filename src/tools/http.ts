@@ -213,6 +213,54 @@ function auditCors(headers: Headers, probeOrigin: string) {
   };
 }
 
+function extractJsonLd(html: string): unknown[] {
+  const blocks: unknown[] = [];
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    try {
+      blocks.push(JSON.parse(m[1].trim()));
+    } catch {
+      // skip malformed JSON-LD blocks
+    }
+  }
+  return blocks;
+}
+
+function extractOpenGraph(html: string): Record<string, string> {
+  const og: Record<string, string> = {};
+  const re = /<meta[^>]+property=["']og:([^"']+)["'][^>]+content=["']([^"']*)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) og[m[1]] = m[2];
+  return og;
+}
+
+async function extractBySelector(html: string, selector: string, attr?: string): Promise<string[]> {
+  if (attr) {
+    const values: string[] = [];
+    const rewriter = new HTMLRewriter().on(selector, {
+      element(el) {
+        const v = el.getAttribute(attr);
+        if (v !== null) values.push(v);
+      },
+    });
+    await rewriter.transform(new Response(html)).text();
+    return values;
+  }
+  const values: string[] = [];
+  const rewriter = new HTMLRewriter().on(selector, {
+    element() {
+      values.push("");
+    },
+    text(t) {
+      if (values.length === 0) values.push("");
+      values[values.length - 1] += t.text;
+    },
+  });
+  await rewriter.transform(new Response(html)).text();
+  return values.map((v) => v.replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
 export const tools = {
   url_to_markdown: {
     price: "$0.0001",
@@ -312,6 +360,54 @@ export const tools = {
         redirect: "follow",
       });
       return { url: res.url, status: res.status, probeOrigin: PROBE_ORIGIN, cors: auditCors(res.headers, PROBE_ORIGIN) };
+    },
+  },
+
+  structured_data_extract: {
+    price: "$0.0003",
+    description:
+      "Fetch a URL and extract structured data deterministically: JSON-LD blocks, OpenGraph/meta tags, and optional caller-supplied CSS-selector fields (e.g. { price: '.product-price', title: 'h1' }). No LLM involved — pure HTML parsing via CSS selectors, so results are exact matches only, not summarized or inferred.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to extract from" },
+        selectors: {
+          type: "object",
+          description:
+            "Optional map of field name -> CSS selector (e.g. { price: '.product-price', headline: 'h1' }). Each field returns an array of matched, whitespace-normalized text values in document order.",
+          additionalProperties: { type: "string" },
+        },
+        attr: {
+          type: "string",
+          description:
+            "Optional HTML attribute to extract instead of text content (e.g. 'href', 'src', 'content'). Applies to all selector fields in this call.",
+        },
+      },
+      required: ["url"],
+    },
+    async run({ url, selectors, attr }: { url: string; selectors?: Record<string, string>; attr?: string }) {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+        redirect: "follow",
+      });
+      if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+      const html = await res.text();
+
+      const fields: Record<string, string[]> = {};
+      if (selectors) {
+        for (const [field, selector] of Object.entries(selectors)) {
+          fields[field] = await extractBySelector(html, selector, attr);
+        }
+      }
+
+      return {
+        url: res.url,
+        status: res.status,
+        title: extractTag(html, "title"),
+        jsonLd: extractJsonLd(html),
+        openGraph: extractOpenGraph(html),
+        fields,
+      };
     },
   },
 
