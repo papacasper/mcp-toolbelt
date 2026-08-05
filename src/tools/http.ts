@@ -364,7 +364,7 @@ export const tools = {
   },
 
   structured_data_extract: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Fetch a URL and extract structured data deterministically: JSON-LD blocks, OpenGraph/meta tags, and optional caller-supplied CSS-selector fields (e.g. { price: '.product-price', title: 'h1' }). No LLM involved — pure HTML parsing via CSS selectors, so results are exact matches only, not summarized or inferred.",
     inputSchema: {
