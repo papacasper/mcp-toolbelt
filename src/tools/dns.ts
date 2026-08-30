@@ -1,5 +1,5 @@
 import { promises as dns, Resolver } from "node:dns";
-import { whoisQuery, extractWhoisField } from "./shared";
+import { whoisQuery, extractWhoisField, mapWithConcurrency } from "./shared";
 
 const PUBLIC_RESOLVERS: Record<string, string> = {
   google: "8.8.8.8",
@@ -43,6 +43,7 @@ async function lookupDomainWhois(domain: string): Promise<{
   daysRemaining: number | null;
   expired: boolean | null;
   whoisServer: string | null;
+  raw?: string;
 }> {
   const ianaRaw = await whoisQuery("whois.iana.org", domain);
   const referral = extractWhoisField(ianaRaw, ["refer", "whois"]);
@@ -80,6 +81,7 @@ async function lookupDomainWhois(domain: string): Promise<{
     daysRemaining,
     expired: daysRemaining === null ? null : daysRemaining < 0,
     whoisServer: server,
+    raw,
   };
 }
 
@@ -205,6 +207,53 @@ async function lookupDnsHealth(domain: string) {
       !dmarc && "No DMARC record found",
     ].filter(Boolean) as string[],
   };
+}
+
+const COMMON_TLDS = ["com", "net", "org", "io", "co", "ai", "app", "dev"];
+const KEYBOARD_ADJACENT: Record<string, string[]> = {
+  q: ["w", "a"], w: ["q", "e", "s"], e: ["w", "r", "d"], r: ["e", "t", "f"], t: ["r", "y", "g"],
+  y: ["t", "u", "h"], u: ["y", "i", "j"], i: ["u", "o", "k"], o: ["i", "p", "l"], p: ["o", "l"],
+  a: ["q", "s", "z"], s: ["a", "d", "w"], d: ["s", "f", "e"], f: ["d", "g", "r"], g: ["f", "h", "t"],
+  h: ["g", "j", "y"], j: ["h", "k", "u"], k: ["j", "l", "i"], l: ["k", "o"],
+  z: ["a", "x"], x: ["z", "c"], c: ["x", "v"], v: ["c", "b"], b: ["v", "n"], n: ["b", "m"], m: ["n"],
+};
+
+function generateTypoVariants(label: string): Set<string> {
+  const variants = new Set<string>();
+
+  for (let i = 0; i < label.length; i++) {
+    // omission
+    variants.add(label.slice(0, i) + label.slice(i + 1));
+    // doubling
+    variants.add(label.slice(0, i) + label[i] + label[i] + label.slice(i + 1));
+    // adjacent-key substitution
+    for (const adj of KEYBOARD_ADJACENT[label[i]] ?? []) {
+      variants.add(label.slice(0, i) + adj + label.slice(i + 1));
+    }
+    // adjacent transposition
+    if (i < label.length - 1) {
+      variants.add(label.slice(0, i) + label[i + 1] + label[i] + label.slice(i + 2));
+    }
+  }
+
+  variants.delete(label);
+  variants.delete("");
+  return variants;
+}
+
+async function isDomainRegistered(domain: string): Promise<boolean | null> {
+  try {
+    const raw = await whoisQuery("whois.iana.org", domain);
+    const referral = extractWhoisField(raw, ["refer", "whois"]);
+    if (!referral) {
+      // No referring registry whois server usually means the TLD has no matching record, i.e. unregistered
+      return /No match|NOT FOUND|no entries found/i.test(raw) ? false : null;
+    }
+    const registryRaw = await whoisQuery(referral, domain);
+    return !/No match|NOT FOUND|No Data Found|no entries found|Domain not found|Status:\s*free/i.test(registryRaw);
+  } catch {
+    return null;
+  }
 }
 
 export const tools = {
@@ -360,6 +409,54 @@ export const tools = {
         dmarc: { record: dmarc, policy: dmarcPolicy },
         dkimSelectorsChecked: dkimSelectors,
         issues,
+      };
+    },
+  },
+
+  domain_availability_check: {
+    price: "$0.002",
+    description:
+      "Check whether a domain is registered, plus scan common typo-squat variants (adjacent-key substitution, letter omission/doubling, transposition) across popular TLDs (.com, .net, .org, .io, .co, .ai, .app, .dev) for brand-protection or domain-flipping research. WHOIS-based; capped at 40 variants checked per call for latency.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Bare domain to check, e.g. example.com" },
+        checkSquats: { type: "boolean", description: "Also scan typo-squat variants (default true)" },
+      },
+      required: ["domain"],
+    },
+    async run({ domain, checkSquats }: { domain: string; checkSquats?: boolean }) {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+      const parts = cleanDomain.split(".");
+      const tld = parts.length > 1 ? parts.slice(1).join(".") : "com";
+      const label = parts[0];
+
+      const registered = await isDomainRegistered(cleanDomain);
+
+      if (checkSquats === false) {
+        return { domain: cleanDomain, registered, squats: null };
+      }
+
+      const variantLabels = [...generateTypoVariants(label)].slice(0, 20);
+      const candidates: string[] = [];
+      for (const v of variantLabels) candidates.push(`${v}.${tld}`);
+      for (const t of COMMON_TLDS) {
+        if (t !== tld) candidates.push(`${label}.${t}`);
+      }
+      const capped = candidates.slice(0, 40);
+
+      const results = await mapWithConcurrency(capped, 6, async (d) => ({
+        domain: d,
+        registered: await isDomainRegistered(d),
+      }));
+
+      return {
+        domain: cleanDomain,
+        registered,
+        squatsChecked: results.length,
+        squatsRegistered: results.filter((r) => r.registered === true),
+        squatsAvailable: results.filter((r) => r.registered === false),
+        squatsUnknown: results.filter((r) => r.registered === null).map((r) => r.domain),
       };
     },
   },

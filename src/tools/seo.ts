@@ -140,7 +140,108 @@ async function crawlBrokenLinks(
   };
 }
 
+const AI_CRAWLER_AGENTS = [
+  "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-Web", "anthropic-ai",
+  "CCBot", "PerplexityBot", "Google-Extended", "Applebot-Extended", "Bytespider", "Amazonbot",
+];
+
+function parseRobotsDirectives(robotsTxt: string): Map<string, { disallow: string[]; allow: string[] }> {
+  const groups = new Map<string, { disallow: string[]; allow: string[] }>();
+  let currentAgents: string[] = [];
+  let groupOpen = false;
+
+  for (const rawLine of robotsTxt.split("\n")) {
+    const line = rawLine.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    const [key, ...rest] = line.split(":");
+    const value = rest.join(":").trim();
+    const directive = key.trim().toLowerCase();
+
+    if (directive === "user-agent") {
+      if (!groupOpen) currentAgents = [value];
+      else currentAgents.push(value);
+      groupOpen = true;
+      if (!groups.has(value)) groups.set(value, { disallow: [], allow: [] });
+    } else if (directive === "disallow" && currentAgents.length) {
+      groupOpen = false;
+      for (const agent of currentAgents) groups.get(agent)!.disallow.push(value);
+    } else if (directive === "allow" && currentAgents.length) {
+      groupOpen = false;
+      for (const agent of currentAgents) groups.get(agent)!.allow.push(value);
+    } else {
+      groupOpen = false;
+    }
+  }
+
+  return groups;
+}
+
 export const tools = {
+  ai_crawler_policy_check: {
+    price: "$0.0003",
+    description:
+      "Check a site's robots.txt for explicit directives targeting known AI crawlers (GPTBot, ClaudeBot, CCBot, PerplexityBot, Google-Extended, Bytespider, Amazonbot, and others used for LLM training or AI search/answer products), and check for an llms.txt file. Useful for publishers deciding whether their content policy toward AI crawlers matches their intent, or for auditing a competitor's stance.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Any URL on the site to check (origin is derived from it)" },
+      },
+      required: ["url"],
+    },
+    async run({ url }: { url: string }) {
+      const origin = new URL(url).origin;
+
+      const robotsRes = await fetch(`${origin}/robots.txt`).catch(() => null);
+      const robotsTxt = robotsRes?.ok ? await robotsRes.text() : null;
+
+      const llmsRes = await fetch(`${origin}/llms.txt`).catch(() => null);
+      const hasLlmsTxt = !!llmsRes?.ok;
+
+      if (!robotsTxt) {
+        return {
+          origin,
+          hasRobotsTxt: false,
+          hasLlmsTxt,
+          agents: AI_CRAWLER_AGENTS.map((agent) => ({ agent, mentioned: false, blocked: null })),
+          wildcardDisallowsAll: null,
+          issues: ["No robots.txt found — AI crawlers will default to their own policy (usually: crawl everything)"],
+        };
+      }
+
+      const groups = parseRobotsDirectives(robotsTxt);
+      const wildcard = groups.get("*");
+      const wildcardDisallowsAll = wildcard?.disallow.some((d) => d === "/") ?? false;
+
+      const agents = AI_CRAWLER_AGENTS.map((agent) => {
+        const match = [...groups.keys()].find((g) => g.toLowerCase() === agent.toLowerCase());
+        if (!match) {
+          return { agent, mentioned: false, blocked: wildcardDisallowsAll ? true : null };
+        }
+        const rules = groups.get(match)!;
+        const blocked = rules.disallow.some((d) => d === "/") && !rules.allow.some((a) => a === "/");
+        return { agent, mentioned: true, blocked };
+      });
+
+      const unmentioned = agents.filter((a) => !a.mentioned).map((a) => a.agent);
+      const issues: string[] = [];
+      if (unmentioned.length && !wildcardDisallowsAll) {
+        issues.push(`No explicit rule for: ${unmentioned.join(", ")} — these will crawl under the wildcard (*) or default-allow policy`);
+      }
+      if (!hasLlmsTxt) {
+        issues.push("No llms.txt found — an emerging (non-standardized) convention some sites use to give AI systems a curated summary of their content");
+      }
+
+      return {
+        origin,
+        hasRobotsTxt: true,
+        hasLlmsTxt,
+        wildcardDisallowsAll,
+        agents,
+        issues,
+      };
+    },
+  },
+
   seo_audit: {
     price: "$0.0003",
     description:
