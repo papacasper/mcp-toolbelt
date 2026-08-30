@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.papacasper/mcp-toolbelt",
   "title": "mcp-toolbelt",
-  "description": "Pay-per-call web, SEO, DNS, and network tools via the x402 protocol.",
-  "version": "1.0.0",
+  "description": "29 pay-per-call DNS, SEO, SSL, security, and dev tools for AI agents. x402, no API key.",
+  "version": "1.1.0",
   "remotes": [
     {
       "type": "streamable-http",
