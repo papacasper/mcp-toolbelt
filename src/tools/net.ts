@@ -1,6 +1,7 @@
 import { connect as tlsConnect } from "node:tls";
 import { connect as netConnect } from "node:net";
 import { mapWithConcurrency } from "./shared";
+import { assertPublicHost } from "./ssrf-guard";
 
 function checkCertExpiry(hostname: string, port: number, timeoutMs = 8000): Promise<{
   subject: string;
@@ -86,6 +87,7 @@ export const tools = {
     },
     async run({ hostname, port }: { hostname: string; port?: number }) {
       const cleanHost = hostname.replace(/^https?:\/\//, "").split("/")[0];
+      await assertPublicHost(cleanHost);
       const result = await checkCertExpiry(cleanHost, port ?? 443);
       return { hostname: cleanHost, port: port ?? 443, ...result };
     },
@@ -109,6 +111,7 @@ export const tools = {
     },
     async run({ host, ports }: { host: string; ports?: number[] }) {
       const cleanHost = host.replace(/^https?:\/\//, "").split("/")[0];
+      await assertPublicHost(cleanHost);
       const list = (ports?.length ? ports : COMMON_PORTS)
         .filter((p) => Number.isInteger(p) && p > 0 && p <= 65535)
         .slice(0, 100);
@@ -131,6 +134,7 @@ export const tools = {
       if (!/^wss?:\/\//i.test(url)) {
         return { url, connected: false, error: "URL must start with ws:// or wss://" };
       }
+      await assertPublicHost(new URL(url).hostname);
       const start = Date.now();
       return new Promise((resolve) => {
         let settled = false;

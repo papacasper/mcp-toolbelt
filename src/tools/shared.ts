@@ -1,6 +1,8 @@
 import { connect as netConnect } from "node:net";
+import { assertPublicHost } from "./ssrf-guard";
 
-export function whoisQuery(server: string, query: string, timeoutMs = 6000): Promise<string> {
+export async function whoisQuery(server: string, query: string, timeoutMs = 6000): Promise<string> {
+  await assertPublicHost(server);
   return new Promise((resolve, reject) => {
     const socket = netConnect({ host: server, port: 43, timeout: timeoutMs });
     let data = "";

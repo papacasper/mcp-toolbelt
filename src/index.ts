@@ -5,6 +5,9 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { tools } from "./tools";
 import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
 import { dashboardHtml } from "./dashboard";
+import { installFetchGuard } from "./tools/ssrf-guard";
+
+installFetchGuard();
 
 const PORT = Number(process.env.PORT ?? 3457);
 const API_KEY = process.env.MCP_API_KEY ?? "";
