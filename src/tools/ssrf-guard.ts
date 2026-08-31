@@ -32,7 +32,6 @@ function isPrivateIPv6(ip: string): boolean {
  * Resolves `hostname` and throws if it (or any resolved address) is loopback,
  * link-local, private-range, or otherwise internal. Prevents public tool calls
  * from being used to reach the host's own network or cloud metadata endpoints.
- * Only checks the initial hostname, not subsequent redirect hops.
  */
 export async function assertPublicHost(hostname: string): Promise<void> {
   const clean = hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -63,19 +62,56 @@ export async function assertPublicHost(hostname: string): Promise<void> {
   }
 }
 
+const MAX_REDIRECTS = 10;
+
 /**
  * Monkey-patches globalThis.fetch so every tool's fetch() call is checked
  * against assertPublicHost before the real network request is made.
  * Centralizing here means new tools get the guard for free.
+ *
+ * When the caller wants redirects followed (the default), redirects are
+ * followed manually here, one hop at a time, validating the target host of
+ * every hop before connecting — otherwise a public URL could 302 to an
+ * internal address and bypass the initial-host check entirely.
  */
 export function installFetchGuard(): void {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: any, init?: any) => {
+    const isRequestObj = typeof Request !== "undefined" && input instanceof Request;
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input?.url;
-    if (urlStr) {
-      const hostname = new URL(urlStr).hostname;
-      await assertPublicHost(hostname);
+    if (!urlStr) return originalFetch(input, init);
+
+    const baseInit: any = { ...(init ?? {}) };
+    if (isRequestObj) {
+      baseInit.method ??= input.method;
+      baseInit.headers ??= input.headers;
+      baseInit.body ??= (input as Request).body ?? undefined;
     }
-    return originalFetch(input, init);
+    const wantsFollow = (baseInit.redirect ?? "follow") === "follow";
+
+    let currentUrl = urlStr;
+    await assertPublicHost(new URL(currentUrl).hostname);
+
+    if (!wantsFollow) {
+      return originalFetch(currentUrl, baseInit);
+    }
+
+    let currentInit: any = { ...baseInit, redirect: "manual" };
+    let res = await originalFetch(currentUrl, currentInit);
+    let hops = 0;
+    while (res.status >= 300 && res.status < 400 && res.headers.get("location") && hops < MAX_REDIRECTS) {
+      const location = res.headers.get("location")!;
+      const nextUrl = new URL(location, currentUrl).toString();
+      await assertPublicHost(new URL(nextUrl).hostname);
+      currentUrl = nextUrl;
+      hops++;
+
+      const method = String(currentInit.method ?? "GET").toUpperCase();
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
+        currentInit = { ...currentInit, method: "GET", body: undefined, redirect: "manual" };
+      }
+      res = await originalFetch(currentUrl, currentInit);
+    }
+    return res;
   }) as typeof fetch;
 }
