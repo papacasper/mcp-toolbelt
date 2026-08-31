@@ -148,7 +148,35 @@ app.post("/", async (c) => {
   if (API_KEY && method === "tools/call") {
     const provided = c.req.header("x-api-key") ?? "";
     if (provided !== API_KEY) {
-      return c.json({ error: "unauthorized" }, 401);
+      // No valid free-access key — fall through to x402 pay-per-call instead of a flat 401,
+      // so standard MCP clients (Smithery, Glama, Claude Desktop) can actually pay for tools/call.
+      const name = params?.name as string | undefined;
+      if (!name || !(name in tools)) {
+        return c.json(rpcError(id, -32602, `Unknown tool: ${name}`), 400);
+      }
+      if (!X402_PAY_TO) {
+        return c.json({ error: "unauthorized" }, 401);
+      }
+      const payHeaders = new Headers(c.req.raw.headers);
+      payHeaders.set("content-type", "application/json");
+      const payResponse = await app.request(`/pay/${name}`, {
+        method: "POST",
+        headers: payHeaders,
+        body: JSON.stringify(params?.arguments ?? {}),
+      });
+      const paymentResponseHeader = payResponse.headers.get("X-PAYMENT-RESPONSE");
+      if (paymentResponseHeader) c.header("X-PAYMENT-RESPONSE", paymentResponseHeader);
+      if (payResponse.status === 402) {
+        const paymentRequiredHeader = payResponse.headers.get("payment-required");
+        if (paymentRequiredHeader) c.header("payment-required", paymentRequiredHeader);
+        const challenge = await payResponse.json().catch(() => ({}));
+        return c.json(challenge, 402);
+      }
+      const output = await payResponse.json();
+      if (!payResponse.ok) {
+        return c.json(rpcResult(id, { content: [{ type: "text", text: `Error: ${output?.error ?? "payment failed"}` }], isError: true }));
+      }
+      return c.json(rpcResult(id, { content: [{ type: "text", text: JSON.stringify(output, null, 2) }], isError: false }));
     }
   }
 
