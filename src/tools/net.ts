@@ -75,7 +75,7 @@ async function scanPorts(host: string, ports: number[], timeoutMs = 2500) {
 
 export const tools = {
   ssl_cert_check: {
-    price: "$0.0002",
+    price: "$0.01",
     description: "Connect to a host over TLS and report its certificate's expiry date, days remaining, issuer, and subject.",
     inputSchema: {
       type: "object",
@@ -94,7 +94,7 @@ export const tools = {
   },
 
   check_open_ports: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "TCP-connect scan a host for open ports. Defaults to a list of ~20 common service ports (SSH, HTTP/S, mail, DBs, etc.) if none are given. For checking your own infrastructure's exposure — capped at 100 ports per call.",
     inputSchema: {
@@ -120,7 +120,7 @@ export const tools = {
   },
 
   websocket_endpoint_check: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Test a WebSocket endpoint (ws:// or wss://): attempts the handshake, reports success/failure, time-to-open in ms, and close code/reason. Useful for verifying a WebSocket server is reachable and completes its upgrade handshake before you wire real traffic to it.",
     inputSchema: {

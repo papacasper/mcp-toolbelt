@@ -178,7 +178,7 @@ function parseRobotsDirectives(robotsTxt: string): Map<string, { disallow: strin
 
 export const tools = {
   ai_crawler_policy_check: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Check a site's robots.txt for explicit directives targeting known AI crawlers (GPTBot, ClaudeBot, CCBot, PerplexityBot, Google-Extended, Bytespider, Amazonbot, and others used for LLM training or AI search/answer products), and check for an llms.txt file. Useful for publishers deciding whether their content policy toward AI crawlers matches their intent, or for auditing a competitor's stance.",
     inputSchema: {
@@ -243,7 +243,7 @@ export const tools = {
   },
 
   seo_audit: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Fetch a URL and run an SEO audit: title/meta description length, canonical tag, Open Graph + Twitter Card tags, html lang attribute, viewport meta, heading structure, image alt-text coverage, internal/external link counts and generic-anchor-text detection, robots meta (noindex/nofollow), structured data (JSON-LD) presence, and robots.txt/sitemap.xml presence.",
     inputSchema: {
@@ -348,7 +348,7 @@ export const tools = {
   },
 
   check_robots_sitemap: {
-    price: "$0.0001",
+    price: "$0.01",
     description: "Check whether a site has a valid robots.txt and sitemap.xml, and return their raw contents (truncated).",
     inputSchema: {
       type: "object",
@@ -378,7 +378,7 @@ export const tools = {
   },
 
   broken_link_check: {
-    price: "$0.001",
+    price: "$0.01",
     description:
       "Crawl a site starting from a URL (same-origin pages only, bounded by maxPages) and check every linked URL for broken status codes. Returns broken links with the page(s) they were found on. Note: some external sites (e.g. social platforms) block automated HEAD/GET requests and may show up as false positives.",
     inputSchema: {
@@ -397,7 +397,7 @@ export const tools = {
   },
 
   favicon_manifest_check: {
-    price: "$0.0001",
+    price: "$0.01",
     description:
       "Check a site for favicon, apple-touch-icon, web app manifest, and theme-color presence — a quick completeness check for browser/OS chrome and PWA metadata.",
     inputSchema: {
@@ -449,7 +449,7 @@ export const tools = {
   },
 
   json_ld_schema_validator: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Fetch a URL, extract every JSON-LD (<script type=\"application/ld+json\">) block, and validate basic structure — @context/@type presence plus required fields for common schema.org types (Article, Product, Organization, WebSite, LocalBusiness, BreadcrumbList, FAQPage). Reports per-block errors rather than failing the whole call on one bad block.",
     inputSchema: {
@@ -485,7 +485,7 @@ export const tools = {
   },
 
   sitemap_url_validator: {
-    price: "$0.0005",
+    price: "$0.01",
     description:
       "Parse a site's sitemap.xml (following one level of sitemap-index nesting) and check the HTTP status of every listed URL. Concurrency-limited, capped at 200 URLs checked per call. Reports broken/redirecting URLs found in the sitemap.",
     inputSchema: {

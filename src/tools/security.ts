@@ -49,7 +49,7 @@ async function pollSslLabs(host: string, maxWaitMs = 90000): Promise<any> {
 
 export const tools = {
   safe_browsing_check: {
-    price: "$0.001",
+    price: "$0.01",
     description:
       "Check a URL against Google Safe Browsing's malware/phishing/unwanted-software/PUA blocklists. Requires GOOGLE_SAFE_BROWSING_API_KEY to be configured server-side (free Google Cloud API key).",
     inputSchema: {

@@ -258,7 +258,7 @@ async function isDomainRegistered(domain: string): Promise<boolean | null> {
 
 export const tools = {
   domain_health_check: {
-    price: "$0.0005",
+    price: "$0.01",
     description:
       "Check a domain's registration expiry (via WHOIS) and DNS health: nameservers, A/AAAA, MX, SPF, and DMARC records. Flags common misconfigurations.",
     inputSchema: {
@@ -279,7 +279,7 @@ export const tools = {
   },
 
   dns_propagation_check: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Query a DNS record for a domain against several major public resolvers (Google, Cloudflare, Quad9, OpenDNS) in parallel and compare the answers. Flags mismatches, which usually mean propagation is still in progress after a DNS change.",
     inputSchema: {
@@ -320,7 +320,7 @@ export const tools = {
   },
 
   ip_geolocation_asn_lookup: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Resolve a hostname to its IPv4 addresses and look up each one's ASN, network prefix, country code, and network owner via Team Cymru's DNS-based WHOIS service (no API key). Country-level only — not city/street geolocation.",
     inputSchema: {
@@ -344,7 +344,7 @@ export const tools = {
   },
 
   email_deliverability_check: {
-    price: "$0.0007",
+    price: "$0.01",
     description:
       "Deep-dive email deliverability check for a domain: MX records + reverse-DNS (PTR) on each MX host, common DKIM selector probing, SPF lookup-count (RFC 7208 caps at 10), DMARC policy strength, and DNSBL blacklist lookups (Spamhaus Zen, SpamCop, Barracuda) on MX IPs. Note: public-resolver DNSBL queries are frequently rate-limited or blocked by Spamhaus, so a `listed: null` result means \"unknown\", not \"clean\" — treat null results as inconclusive, not as a clean bill of health.",
     inputSchema: {
@@ -414,7 +414,7 @@ export const tools = {
   },
 
   domain_availability_check: {
-    price: "$0.002",
+    price: "$0.01",
     description:
       "Check whether a domain is registered, plus scan common typo-squat variants (adjacent-key substitution, letter omission/doubling, transposition) across popular TLDs (.com, .net, .org, .io, .co, .ai, .app, .dev) for brand-protection or domain-flipping research. WHOIS-based; capped at 40 variants checked per call for latency.",
     inputSchema: {

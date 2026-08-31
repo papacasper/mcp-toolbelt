@@ -13,7 +13,7 @@ async function settled<T>(label: string, promise: Promise<T>) {
 
 export const tools = {
   domain_report: {
-    price: "$0.0012",
+    price: "$0.01",
     description:
       "Bundle: runs seo_audit, domain_health_check (WHOIS + DNS: nameservers, A/AAAA, MX, SPF, DMARC), and email_deliverability_check (DKIM, SPF lookup-count, DMARC strength, DNSBL) against a domain in one call, one charge. Cheaper than calling the three tools separately. Each sub-check reports independently, so a failure in one doesn't void the others.",
     inputSchema: {

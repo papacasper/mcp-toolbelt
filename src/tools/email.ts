@@ -68,7 +68,7 @@ async function validateEmailAddress(email: string) {
 
 export const tools = {
   email_address_validate: {
-    price: "$0.0003",
+    price: "$0.01",
     description:
       "Validate a single email address: RFC syntax check, MX record lookup on the domain, disposable/temporary-email-provider detection, and role-account detection (info@, admin@, etc.). Per-address check — different from email_deliverability_check, which audits a whole domain's sending reputation (SPF/DKIM/DMARC/PTR/DNSBL).",
     inputSchema: {

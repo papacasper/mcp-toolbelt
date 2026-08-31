@@ -263,7 +263,7 @@ async function extractBySelector(html: string, selector: string, attr?: string):
 
 export const tools = {
   url_to_markdown: {
-    price: "$0.0001",
+    price: "$0.01",
     description: "Fetch a URL and return its main text content as clean, readable plain text/markdown-ish output. Strips scripts, styles, and HTML tags.",
     inputSchema: {
       type: "object",
@@ -282,7 +282,7 @@ export const tools = {
   },
 
   security_headers_audit: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Fetch a URL and audit its response for security-relevant HTTP headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy). Flags missing/misconfigured headers with a score.",
     inputSchema: {
@@ -308,7 +308,7 @@ export const tools = {
   },
 
   redirect_chain_check: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Follow a URL through every HTTP redirect hop and report the full chain, final destination, and issues like redirect loops, too many hops, or HTTPS-to-HTTP downgrades.",
     inputSchema: {
@@ -324,7 +324,7 @@ export const tools = {
   },
 
   page_performance_check: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Fetch a URL and measure time-to-first-byte, total fetch time, and response size. Flags missing compression, missing Cache-Control, oversized payloads, and slow TTFB.",
     inputSchema: {
@@ -340,7 +340,7 @@ export const tools = {
   },
 
   cors_policy_check: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Send a probe request with a foreign Origin header to a URL and report its CORS response headers. Flags wildcard-origin + credentials combinations and arbitrary-origin reflection, both common CORS misconfigurations.",
     inputSchema: {
@@ -412,7 +412,7 @@ export const tools = {
   },
 
   tech_stack_fingerprint: {
-    price: "$0.0002",
+    price: "$0.01",
     description:
       "Fetch a URL and fingerprint its likely tech stack from response headers (server, x-powered-by, x-generator) and HTML markers (generator meta tag, framework/CMS-specific script or class patterns). Best-effort — not exhaustive, no additional paths are probed.",
     inputSchema: {

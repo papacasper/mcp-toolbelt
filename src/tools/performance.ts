@@ -55,7 +55,7 @@ async function fetchPageSpeed(url: string, strategy: "mobile" | "desktop") {
 
 export const tools = {
   pagespeed_insights: {
-    price: "$0.005",
+    price: "$0.01",
     description:
       "Run Google's real PageSpeed Insights (Lighthouse + Chrome UX Report) against a URL: performance score, Core Web Vitals (LCP, CLS, INP/TBT), and real-user field data where available. Authoritative version of a local timing check — hits Google's own infrastructure. Works without an API key at low volume; set GOOGLE_PAGESPEED_API_KEY server-side for higher throughput.",
     inputSchema: {

@@ -12,7 +12,7 @@ installFetchGuard();
 const PORT = Number(process.env.PORT ?? 3457);
 const API_KEY = process.env.MCP_API_KEY ?? "";
 const X402_PAY_TO = process.env.X402_PAY_TO ?? "";
-const X402_PRICE = process.env.X402_PRICE ?? "$0.0001";
+const X402_PRICE = process.env.X402_PRICE ?? "$0.01";
 const X402_NETWORK = process.env.X402_NETWORK ?? "eip155:8453";
 const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? "https://facilitator.xpay.sh";
 const X402_PUBLIC_BASE_URL = process.env.X402_PUBLIC_BASE_URL ?? "https://papacasper.com/mcp";

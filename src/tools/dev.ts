@@ -98,7 +98,7 @@ async function githubRepoHealth(owner: string, repo: string) {
 
 export const tools = {
   package_vulnerability_check: {
-    price: "$0.0015",
+    price: "$0.01",
     description:
       "Look up a package (optionally pinned to a version) against OSV.dev's aggregated vulnerability database (GitHub Advisories, PyPA, RustSec, Go vuln DB, etc.) for known CVEs/advisories. Supports npm, PyPI, crates.io, RubyGems, Go, Maven, NuGet, and Packagist ecosystems. Useful before adding a dependency.",
     inputSchema: {
@@ -116,7 +116,7 @@ export const tools = {
   },
 
   github_repo_health_check: {
-    price: "$0.0007",
+    price: "$0.01",
     description:
       "Check a GitHub repository's health signals: stars, forks, open issues, license, archived/disabled status, and days since last push. Flags likely-abandoned or unlicensed repos. Useful before depending on a repo.",
     inputSchema: {
