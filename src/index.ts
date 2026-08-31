@@ -134,14 +134,6 @@ function rpcResult(id: unknown, result: unknown) {
 }
 
 app.post("/", async (c) => {
-  // Simple API-key gate — interim access control until x402 pay-per-call is wired in.
-  if (API_KEY) {
-    const provided = c.req.header("x-api-key") ?? "";
-    if (provided !== API_KEY) {
-      return c.json({ error: "unauthorized" }, 401);
-    }
-  }
-
   let body: any;
   try {
     body = await c.req.json();
@@ -150,6 +142,15 @@ app.post("/", async (c) => {
   }
 
   const { id, method, params } = body ?? {};
+
+  // API-key gate only on tools/call — initialize/tools/list stay open so directories
+  // and agents can discover tools without a key before deciding to pay per call.
+  if (API_KEY && method === "tools/call") {
+    const provided = c.req.header("x-api-key") ?? "";
+    if (provided !== API_KEY) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+  }
 
   try {
     switch (method) {
