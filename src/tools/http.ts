@@ -213,6 +213,37 @@ function auditCors(headers: Headers, probeOrigin: string) {
   };
 }
 
+const JSON_LD_REQUIRED_FIELDS: Record<string, string[]> = {
+  Article: ["headline", "datePublished"],
+  NewsArticle: ["headline", "datePublished"],
+  BlogPosting: ["headline", "datePublished"],
+  Product: ["name"],
+  Organization: ["name"],
+  BreadcrumbList: ["itemListElement"],
+  WebSite: ["name", "url"],
+  LocalBusiness: ["name", "address"],
+  Person: ["name"],
+  FAQPage: ["mainEntity"],
+};
+
+function validateJsonLdObject(block: any): { types: string[]; valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const types = Array.isArray(block?.["@type"]) ? block["@type"] : [block?.["@type"]].filter(Boolean);
+  if (!block?.["@context"]) errors.push("Missing @context");
+  else if (!String(block["@context"]).includes("schema.org")) errors.push("@context does not reference schema.org");
+  if (!types.length) errors.push("Missing @type");
+  for (const type of types) {
+    const required = JSON_LD_REQUIRED_FIELDS[type];
+    if (!required) continue;
+    for (const field of required) {
+      if (block[field] === undefined || block[field] === null || block[field] === "") {
+        errors.push(`@type "${type}" is missing required field "${field}"`);
+      }
+    }
+  }
+  return { types, valid: errors.length === 0, errors };
+}
+
 function extractJsonLd(html: string): unknown[] {
   const blocks: unknown[] = [];
   const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -263,7 +294,7 @@ async function extractBySelector(html: string, selector: string, attr?: string):
 
 export const tools = {
   url_to_markdown: {
-    price: "$0.01",
+    price: "$0.05",
     description: "Fetch a URL and return its main text content as clean, readable plain text/markdown-ish output. Strips scripts, styles, and HTML tags.",
     inputSchema: {
       type: "object",
@@ -284,7 +315,7 @@ export const tools = {
   security_headers_audit: {
     price: "$0.01",
     description:
-      "Fetch a URL and audit its response for security-relevant HTTP headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy). Flags missing/misconfigured headers with a score.",
+      "Fetch a URL and audit its response headers in one pass: security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) with a score, PLUS its CORS policy (the probe sends a foreign Origin header and flags wildcard-origin + credentials combinations and arbitrary-origin reflection). Header-level checks on a single response — for server/TLS-level checks use ssl_cert_check or ssl_labs_grade instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -294,7 +325,10 @@ export const tools = {
     },
     async run({ url }: { url: string }) {
       const res = await fetch(url, {
-        headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+        headers: {
+          "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)",
+          Origin: PROBE_ORIGIN,
+        },
         redirect: "follow",
       });
       const { checks, score } = auditSecurityHeaders(res.headers, new URL(res.url).protocol === "https:");
@@ -303,6 +337,7 @@ export const tools = {
         status: res.status,
         score,
         checks,
+        cors: { probeOrigin: PROBE_ORIGIN, ...auditCors(res.headers, PROBE_ORIGIN) },
       };
     },
   },
@@ -324,9 +359,9 @@ export const tools = {
   },
 
   page_performance_check: {
-    price: "$0.01",
+    price: "$0.05",
     description:
-      "Fetch a URL and measure time-to-first-byte, total fetch time, and response size. Flags missing compression, missing Cache-Control, oversized payloads, and slow TTFB.",
+      "Fetch a URL and measure time-to-first-byte, total fetch time, and response size from this server. Flags missing compression, missing Cache-Control, oversized payloads, and slow TTFB. Lightweight raw-timing check — for Google Lighthouse scores, Core Web Vitals, and real-user field data use pagespeed_insights instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -339,34 +374,10 @@ export const tools = {
     },
   },
 
-  cors_policy_check: {
-    price: "$0.01",
-    description:
-      "Send a probe request with a foreign Origin header to a URL and report its CORS response headers. Flags wildcard-origin + credentials combinations and arbitrary-origin reflection, both common CORS misconfigurations.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "The URL to probe" },
-      },
-      required: ["url"],
-    },
-    async run({ url }: { url: string }) {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)",
-          Origin: PROBE_ORIGIN,
-        },
-        redirect: "follow",
-      });
-      return { url: res.url, status: res.status, probeOrigin: PROBE_ORIGIN, cors: auditCors(res.headers, PROBE_ORIGIN) };
-    },
-  },
-
   structured_data_extract: {
     price: "$0.01",
     description:
-      "Fetch a URL and extract structured data deterministically: JSON-LD blocks, OpenGraph/meta tags, and optional caller-supplied CSS-selector fields (e.g. { price: '.product-price', title: 'h1' }). No LLM involved — pure HTML parsing via CSS selectors, so results are exact matches only, not summarized or inferred.",
+      "Fetch a URL and extract structured data deterministically: JSON-LD blocks (each one also VALIDATED — @context/@type presence plus required fields for common schema.org types like Article, Product, Organization, FAQPage), OpenGraph/meta tags, and optional caller-supplied CSS-selector fields (e.g. { price: '.product-price', title: 'h1' }). No LLM involved — pure HTML parsing via CSS selectors, so results are exact matches only, not summarized or inferred. For a whole-page SEO audit (headings, links, images, meta lengths) use seo_audit instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -400,11 +411,29 @@ export const tools = {
         }
       }
 
+      const jsonLdBlocks = extractJsonLd(html);
+      const jsonLdValidation = jsonLdBlocks.map((block: any, i: number) => {
+        const items = Array.isArray(block) ? block : (block?.["@graph"] ?? [block]);
+        const parts = (Array.isArray(items) ? items : [items]).map((item: any) => validateJsonLdObject(item));
+        return {
+          index: i,
+          types: parts.flatMap((p) => p.types),
+          valid: parts.every((p) => p.valid),
+          errors: parts.flatMap((p) => p.errors),
+        };
+      });
+
       return {
         url: res.url,
         status: res.status,
         title: extractTag(html, "title"),
-        jsonLd: extractJsonLd(html),
+        jsonLd: jsonLdBlocks,
+        jsonLdValidation: {
+          blocksFound: jsonLdBlocks.length,
+          validCount: jsonLdValidation.filter((v) => v.valid).length,
+          invalidCount: jsonLdValidation.filter((v) => !v.valid).length,
+          results: jsonLdValidation,
+        },
         openGraph: extractOpenGraph(html),
         fields,
       };
@@ -414,7 +443,7 @@ export const tools = {
   tech_stack_fingerprint: {
     price: "$0.01",
     description:
-      "Fetch a URL and fingerprint its likely tech stack from response headers (server, x-powered-by, x-generator) and HTML markers (generator meta tag, framework/CMS-specific script or class patterns). Best-effort — not exhaustive, no additional paths are probed.",
+      "Fetch a URL and fingerprint its likely tech stack from response headers (server, x-powered-by, x-generator) and HTML markers (generator meta tag, framework/CMS-specific script or class patterns). Answers 'what is this site built with?' — for on-page SEO/content signals use seo_audit, for raw structured data use structured_data_extract. Best-effort — not exhaustive, no additional paths are probed.",
     inputSchema: {
       type: "object",
       properties: {

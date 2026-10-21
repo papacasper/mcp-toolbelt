@@ -1,7 +1,9 @@
 import { connect as tlsConnect } from "node:tls";
 import { connect as netConnect } from "node:net";
+import { promises as dnsPromises } from "node:dns";
 import { mapWithConcurrency } from "./shared";
 import { assertPublicHost } from "./ssrf-guard";
+import { cymruAsnLookup } from "./dns";
 
 function checkCertExpiry(hostname: string, port: number, timeoutMs = 8000): Promise<{
   subject: string;
@@ -76,7 +78,7 @@ async function scanPorts(host: string, ports: number[], timeoutMs = 2500) {
 export const tools = {
   ssl_cert_check: {
     price: "$0.01",
-    description: "Connect to a host over TLS and report its certificate's expiry date, days remaining, issuer, and subject.",
+    description: "Connect to a host over TLS and report its certificate's expiry date, days remaining, issuer, and subject. Fast facts only — for a full graded TLS assessment (protocols, ciphers, vulnerabilities) use ssl_labs_grade instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -96,7 +98,7 @@ export const tools = {
   check_open_ports: {
     price: "$0.01",
     description:
-      "TCP-connect scan a host for open ports. Defaults to a list of ~20 common service ports (SSH, HTTP/S, mail, DBs, etc.) if none are given. For checking your own infrastructure's exposure — capped at 100 ports per call.",
+      "TCP-connect scan a host for open ports, plus network intel on the host's resolved IPs (ASN, network owner, BGP prefix, country — via Team Cymru). Defaults to a list of ~20 common service ports (SSH, HTTP/S, mail, DBs, etc.) if none are given. For checking your own infrastructure's exposure — capped at 100 ports per call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -115,7 +117,23 @@ export const tools = {
       const list = (ports?.length ? ports : COMMON_PORTS)
         .filter((p) => Number.isInteger(p) && p > 0 && p <= 65535)
         .slice(0, 100);
-      return scanPorts(cleanHost, list);
+      const scan = await scanPorts(cleanHost, list);
+
+      let ips: string[] = [];
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleanHost)) ips = [cleanHost];
+      else {
+        try {
+          ips = await dnsPromises.resolve4(cleanHost);
+        } catch {
+          ips = [];
+        }
+      }
+      const network = await mapWithConcurrency(ips.slice(0, 4), 4, async (ip) => {
+        const asn = await cymruAsnLookup(ip).catch(() => null);
+        return { ip, ...(asn ?? { asn: null }) };
+      });
+
+      return { ...scan, network };
     },
   },
 

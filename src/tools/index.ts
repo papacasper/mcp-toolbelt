@@ -7,6 +7,7 @@ import { tools as securityTools } from "./security";
 import { tools as performanceTools } from "./performance";
 import { tools as devTools } from "./dev";
 import { tools as emailTools } from "./email";
+import { tools as mcpTools } from "./mcp";
 
 export const tools = {
   ...httpTools,
@@ -18,6 +19,7 @@ export const tools = {
   ...performanceTools,
   ...devTools,
   ...emailTools,
+  ...mcpTools,
 };
 
 export type ToolName = keyof typeof tools;

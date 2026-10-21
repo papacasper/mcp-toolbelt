@@ -177,75 +177,10 @@ function parseRobotsDirectives(robotsTxt: string): Map<string, { disallow: strin
 }
 
 export const tools = {
-  ai_crawler_policy_check: {
-    price: "$0.01",
-    description:
-      "Check a site's robots.txt for explicit directives targeting known AI crawlers (GPTBot, ClaudeBot, CCBot, PerplexityBot, Google-Extended, Bytespider, Amazonbot, and others used for LLM training or AI search/answer products), and check for an llms.txt file. Useful for publishers deciding whether their content policy toward AI crawlers matches their intent, or for auditing a competitor's stance.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Any URL on the site to check (origin is derived from it)" },
-      },
-      required: ["url"],
-    },
-    async run({ url }: { url: string }) {
-      const origin = new URL(url).origin;
-
-      const robotsRes = await fetch(`${origin}/robots.txt`).catch(() => null);
-      const robotsTxt = robotsRes?.ok ? await robotsRes.text() : null;
-
-      const llmsRes = await fetch(`${origin}/llms.txt`).catch(() => null);
-      const hasLlmsTxt = !!llmsRes?.ok;
-
-      if (!robotsTxt) {
-        return {
-          origin,
-          hasRobotsTxt: false,
-          hasLlmsTxt,
-          agents: AI_CRAWLER_AGENTS.map((agent) => ({ agent, mentioned: false, blocked: null })),
-          wildcardDisallowsAll: null,
-          issues: ["No robots.txt found — AI crawlers will default to their own policy (usually: crawl everything)"],
-        };
-      }
-
-      const groups = parseRobotsDirectives(robotsTxt);
-      const wildcard = groups.get("*");
-      const wildcardDisallowsAll = wildcard?.disallow.some((d) => d === "/") ?? false;
-
-      const agents = AI_CRAWLER_AGENTS.map((agent) => {
-        const match = [...groups.keys()].find((g) => g.toLowerCase() === agent.toLowerCase());
-        if (!match) {
-          return { agent, mentioned: false, blocked: wildcardDisallowsAll ? true : null };
-        }
-        const rules = groups.get(match)!;
-        const blocked = rules.disallow.some((d) => d === "/") && !rules.allow.some((a) => a === "/");
-        return { agent, mentioned: true, blocked };
-      });
-
-      const unmentioned = agents.filter((a) => !a.mentioned).map((a) => a.agent);
-      const issues: string[] = [];
-      if (unmentioned.length && !wildcardDisallowsAll) {
-        issues.push(`No explicit rule for: ${unmentioned.join(", ")} — these will crawl under the wildcard (*) or default-allow policy`);
-      }
-      if (!hasLlmsTxt) {
-        issues.push("No llms.txt found — an emerging (non-standardized) convention some sites use to give AI systems a curated summary of their content");
-      }
-
-      return {
-        origin,
-        hasRobotsTxt: true,
-        hasLlmsTxt,
-        wildcardDisallowsAll,
-        agents,
-        issues,
-      };
-    },
-  },
-
   seo_audit: {
-    price: "$0.01",
+    price: "$0.05",
     description:
-      "Fetch a URL and run an SEO audit: title/meta description length, canonical tag, Open Graph + Twitter Card tags, html lang attribute, viewport meta, heading structure, image alt-text coverage, internal/external link counts and generic-anchor-text detection, robots meta (noindex/nofollow), structured data (JSON-LD) presence, and robots.txt/sitemap.xml presence.",
+      "Fetch a URL and run a full on-page SEO audit: title/meta description length, canonical tag, Open Graph + Twitter Card tags, html lang attribute, viewport meta, heading structure, image alt-text coverage, internal/external link counts and generic-anchor-text detection, robots meta (noindex/nofollow), structured data (JSON-LD) presence, robots.txt/sitemap.xml presence, and site chrome (favicon, apple-touch-icon, web app manifest, theme-color). Whole-page audit — for raw extracted data only use structured_data_extract, for the platform/framework use tech_stack_fingerprint.",
     inputSchema: {
       type: "object",
       properties: {
@@ -290,6 +225,33 @@ export const tools = {
       } catch {}
 
       const origin = new URL(url).origin;
+
+      // Site chrome (favicon / apple-touch-icon / manifest / theme-color) — folded in from the
+      // former standalone favicon_manifest_check.
+      const iconHref = html.match(/<link[^>]+rel=["'](?:shortcut icon|icon)["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'](?:shortcut icon|icon)["']/i)?.[1]
+        ?? null;
+      const appleTouchHref = html.match(/<link[^>]+rel=["']apple-touch-icon["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']apple-touch-icon["']/i)?.[1]
+        ?? null;
+      const manifestHref = html.match(/<link[^>]+rel=["']manifest["'][^>]+href=["']([^"']+)["']/i)?.[1]
+        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i)?.[1]
+        ?? null;
+      const themeColor = extractMeta(html, "theme-color");
+      const emptyHead = { found: false, status: null, contentType: null };
+      const [faviconLinked, appleTouchIcon, manifestFound, defaultFaviconIco] = await Promise.all([
+        iconHref ? headExists(new URL(iconHref, url).toString()) : Promise.resolve(emptyHead),
+        appleTouchHref ? headExists(new URL(appleTouchHref, url).toString()) : Promise.resolve(emptyHead),
+        manifestHref ? headExists(new URL(manifestHref, url).toString()) : Promise.resolve(emptyHead),
+        headExists(`${origin}/favicon.ico`),
+      ]);
+      const siteChrome = {
+        favicon: faviconLinked.found ? faviconLinked : defaultFaviconIco,
+        appleTouchIcon,
+        manifest: manifestFound,
+        themeColor,
+      };
+
       const anchors = extractAnchors(html, url);
       const internalLinks = anchors.filter((a) => a.absoluteHref.startsWith(origin));
       const externalLinks = anchors.filter((a) => !a.absoluteHref.startsWith(origin));
@@ -324,6 +286,10 @@ export const tools = {
       if (structuredDataBlocks === 0) issues.push("No structured data (JSON-LD) found");
       if (genericAnchorCount > 0) issues.push(`${genericAnchorCount} links use generic anchor text (e.g. "click here")`);
       if (httpNote) issues.push(httpNote);
+      if (!siteChrome.favicon.found) issues.push("No favicon found (neither a <link rel=icon> nor /favicon.ico)");
+      if (!siteChrome.appleTouchIcon.found) issues.push("No apple-touch-icon found — iOS home-screen bookmarks will use a low-quality fallback");
+      if (!siteChrome.manifest.found) issues.push("No web app manifest found — site won't be installable as a PWA");
+      if (!siteChrome.themeColor) issues.push("No theme-color meta tag — browser chrome won't match site branding on mobile");
 
       return {
         url,
@@ -341,6 +307,7 @@ export const tools = {
         structuredDataBlocks,
         hasRobotsTxt: robotsOk,
         hasSitemapXml: sitemapOk,
+        siteChrome,
         issues,
         score: Math.max(0, 100 - issues.length * 6),
       };
@@ -349,7 +316,7 @@ export const tools = {
 
   check_robots_sitemap: {
     price: "$0.01",
-    description: "Check whether a site has a valid robots.txt and sitemap.xml, and return their raw contents (truncated).",
+    description: "Check a site's robots.txt and sitemap.xml in one call: raw contents (truncated), sitemap presence, an AI-crawler policy analysis (explicit rules for GPTBot, ClaudeBot, CCBot, PerplexityBot, Google-Extended, Bytespider, Amazonbot and other AI crawlers, vs wildcard/default), and llms.txt presence. For a scored, whole-site AI-readiness report use ai_readiness_audit instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -369,164 +336,163 @@ export const tools = {
           return { found: false, error: String(e) };
         }
       }
-      const [robots, sitemap] = await Promise.all([
+      const [robots, sitemap, llmsTxt] = await Promise.all([
         safeFetch("/robots.txt"),
         safeFetch("/sitemap.xml"),
+        safeFetch("/llms.txt"),
       ]);
-      return { origin, robots, sitemap };
+
+      let aiCrawlerPolicy: any = null;
+      if ((robots as any).found && (robots as any).content) {
+        const groups = parseRobotsDirectives((robots as any).content);
+        const wildcard = groups.get("*");
+        const wildcardDisallowsAll = wildcard?.disallow.some((d) => d === "/") ?? false;
+        const agents = AI_CRAWLER_AGENTS.map((agent) => {
+          const match = [...groups.keys()].find((g) => g.toLowerCase() === agent.toLowerCase());
+          if (!match) return { agent, mentioned: false, blocked: wildcardDisallowsAll ? true : null };
+          const rules = groups.get(match)!;
+          const blocked = rules.disallow.some((d) => d === "/") && !rules.allow.some((a) => a === "/");
+          return { agent, mentioned: true, blocked };
+        });
+        aiCrawlerPolicy = { wildcardDisallowsAll, agents };
+      }
+
+      return { origin, robots, sitemap, llmsTxt: { found: llmsTxt.found }, aiCrawlerPolicy };
     },
   },
 
   broken_link_check: {
-    price: "$0.01",
+    price: "$0.10",
     description:
-      "Crawl a site starting from a URL (same-origin pages only, bounded by maxPages) and check every linked URL for broken status codes. Returns broken links with the page(s) they were found on. Note: some external sites (e.g. social platforms) block automated HEAD/GET requests and may show up as false positives.",
+      "Find broken links two ways. Default (crawl mode): crawl a site starting from a URL (same-origin pages only, bounded by maxPages) and check every linked URL for broken status codes, returning each broken link with the page(s) it was found on. Sitemap mode (viaSitemap: true): parse the site's sitemap.xml (following one level of sitemap-index nesting) and check the status of every URL listed in it instead. Note: some external sites (e.g. social platforms) block automated HEAD/GET requests and may show up as false positives.",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "Starting URL to crawl" },
-        maxPages: { type: "number", description: "Max same-origin pages to crawl (default 20, capped at 50)" },
-        checkExternal: { type: "boolean", description: "Also check links pointing off-site (default true; crawling never follows off-site links)" },
+        url: { type: "string", description: "Starting URL to crawl — or, in sitemap mode, the sitemap.xml URL or any page URL on the site" },
+        maxPages: { type: "number", description: "Max same-origin pages to crawl in crawl mode (default 20, capped at 50)" },
+        checkExternal: { type: "boolean", description: "Crawl mode only: also check links pointing off-site (default true; crawling never follows off-site links)" },
+        viaSitemap: { type: "boolean", description: "Check the URLs listed in the site's sitemap.xml instead of crawling pages (default false)" },
       },
       required: ["url"],
     },
-    async run({ url, maxPages, checkExternal }: { url: string; maxPages?: number; checkExternal?: boolean }) {
+    async run({ url, maxPages, checkExternal, viaSitemap }: { url: string; maxPages?: number; checkExternal?: boolean; viaSitemap?: boolean }) {
+      if (viaSitemap) {
+        const sitemapUrl = url.endsWith(".xml") ? url : `${new URL(url).origin}/sitemap.xml`;
+        const rootXml = await fetchSitemapXml(sitemapUrl);
+        let locs: string[];
+        let sitemapsFollowed = 1;
+        if (isSitemapIndex(rootXml)) {
+          const childSitemaps = extractSitemapLocs(rootXml).slice(0, 20);
+          const childXmls = await mapWithConcurrency(childSitemaps, 5, (u) => fetchSitemapXml(u).catch(() => ""));
+          locs = childXmls.flatMap((xml) => (xml ? extractSitemapLocs(xml) : []));
+          sitemapsFollowed += childSitemaps.length;
+        } else {
+          locs = extractSitemapLocs(rootXml);
+        }
+        const uniqueLocs = [...new Set(locs)];
+        const capped = uniqueLocs.slice(0, 200);
+        const statuses = await mapWithConcurrency(capped, 8, (u) => checkLinkStatus(u));
+        const broken = capped
+          .map((u, i) => ({ url: u, ...statuses[i] }))
+          .filter((r) => !r.ok);
+        return {
+          mode: "sitemap",
+          sitemapUrl,
+          sitemapsFollowed,
+          urlsFound: uniqueLocs.length,
+          urlsChecked: capped.length,
+          urlsTruncated: uniqueLocs.length > capped.length,
+          brokenCount: broken.length,
+          brokenUrls: broken,
+        };
+      }
       const cappedMaxPages = Math.max(1, Math.min(maxPages ?? 20, 50));
-      return crawlBrokenLinks(url, cappedMaxPages, checkExternal ?? true);
+      return { mode: "crawl", ...(await crawlBrokenLinks(url, cappedMaxPages, checkExternal ?? true)) };
     },
   },
 
-  favicon_manifest_check: {
-    price: "$0.01",
+  ai_readiness_audit: {
+    price: "$0.25",
     description:
-      "Check a site for favicon, apple-touch-icon, web app manifest, and theme-color presence — a quick completeness check for browser/OS chrome and PWA metadata.",
+      "Score how ready a website is for AI agents and LLM-driven discovery, 0-100 with a letter grade: robots.txt presence, explicit AI-crawler policy (GPTBot, ClaudeBot, CCBot, PerplexityBot, and 8 more), llms.txt presence and structure, structured data (JSON-LD) and Open Graph basics, agent/payment discovery files (/.well-known/x402, /openapi.json), sitemap presence, and title/meta basics. The bundle to run before/after making a site agent-friendly — for raw robots/sitemap contents only, use check_robots_sitemap; for classic search SEO only, use seo_audit.",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "Any URL on the site to check (origin is derived from it)" },
+        url: { type: "string", description: "Any URL on the site to audit (origin is derived from it)" },
       },
       required: ["url"],
     },
     async run({ url }: { url: string }) {
       const origin = new URL(url).origin;
-      const html = await fetchText(url).catch(() => "");
 
-      const iconHref = html.match(/<link[^>]+rel=["'](?:shortcut icon|icon)["'][^>]+href=["']([^"']+)["']/i)?.[1]
-        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'](?:shortcut icon|icon)["']/i)?.[1]
-        ?? null;
-      const appleTouchHref = html.match(/<link[^>]+rel=["']apple-touch-icon["'][^>]+href=["']([^"']+)["']/i)?.[1]
-        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']apple-touch-icon["']/i)?.[1]
-        ?? null;
-      const manifestHref = html.match(/<link[^>]+rel=["']manifest["'][^>]+href=["']([^"']+)["']/i)?.[1]
-        ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i)?.[1]
-        ?? null;
-      const themeColor = extractMeta(html, "theme-color");
-
-      const [favicon, appleTouchIcon, manifest, defaultFaviconIco] = await Promise.all([
-        iconHref ? headExists(new URL(iconHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
-        appleTouchHref ? headExists(new URL(appleTouchHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
-        manifestHref ? headExists(new URL(manifestHref, url).toString()) : Promise.resolve({ found: false, status: null, contentType: null }),
-        headExists(`${origin}/favicon.ico`),
+      const [robotsInfo, html, llmsText, x402Ok, openapiOk] = await Promise.all([
+        tools.check_robots_sitemap.run({ url }).catch(() => null),
+        fetchText(url).catch(() => ""),
+        fetch(`${origin}/llms.txt`).then(async (r) => (r.ok ? await r.text() : null)).catch(() => null),
+        fetch(`${origin}/.well-known/x402`).then((r) => r.ok).catch(() => false),
+        fetch(`${origin}/openapi.json`).then((r) => r.ok).catch(() => false),
       ]);
 
-      const effectiveFavicon = favicon.found ? favicon : defaultFaviconIco;
+      const hasRobots = !!(robotsInfo as any)?.robots?.found;
+      const hasSitemap = !!(robotsInfo as any)?.sitemap?.found;
+      const policy = (robotsInfo as any)?.aiCrawlerPolicy ?? null;
+      const mentioned = policy ? policy.agents.filter((a: any) => a.mentioned).length : 0;
+      const totalAgents = AI_CRAWLER_AGENTS.length;
+
+      const llmsPresent = llmsText !== null;
+      const llmsHasHeading = !!llmsText && /^#\s/m.test(llmsText);
+      const llmsHasLinks = !!llmsText && /\[[^\]]+\]\([^)]+\)/.test(llmsText);
+      const llmsSizeable = !!llmsText && llmsText.trim().length > 200;
+
+      const hasJsonLd = /<script[^>]+type=["']application\/ld\+json["']/i.test(html);
+      const hasOg = /<meta[^>]+property=["']og:/i.test(html);
+      const hasTitle = !!extractTag(html, "title");
+      const hasDescription = !!extractMeta(html, "description");
+
+      const components = {
+        robotsTxt: { present: hasRobots, points: hasRobots ? 10 : 0, max: 10 },
+        aiCrawlerPolicy: {
+          explicitAgents: mentioned,
+          ofAgents: totalAgents,
+          wildcardDisallowsAll: policy?.wildcardDisallowsAll ?? null,
+          points: Math.round((mentioned / totalAgents) * 15),
+          max: 15,
+        },
+        llmsTxt: {
+          present: llmsPresent,
+          hasHeading: llmsHasHeading,
+          hasLinks: llmsHasLinks,
+          sizeable: llmsSizeable,
+          points: (llmsPresent ? 13 : 0) + (llmsHasHeading ? 4 : 0) + (llmsHasLinks ? 4 : 0) + (llmsSizeable ? 4 : 0),
+          max: 25,
+        },
+        structuredData: { jsonLd: hasJsonLd, openGraph: hasOg, points: (hasJsonLd ? 10 : 0) + (hasOg ? 5 : 0), max: 15 },
+        agentDiscovery: { x402: x402Ok, openapiJson: openapiOk, points: (x402Ok ? 10 : 0) + (openapiOk ? 5 : 0), max: 15 },
+        sitemap: { present: hasSitemap, points: hasSitemap ? 10 : 0, max: 10 },
+        pageBasics: { title: hasTitle, metaDescription: hasDescription, points: (hasTitle ? 5 : 0) + (hasDescription ? 5 : 0), max: 10 },
+      };
+
+      const score = Object.values(components).reduce((sum, c: any) => sum + c.points, 0);
+      const grade = score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 40 ? "D" : "F";
 
       const issues: string[] = [];
-      if (!effectiveFavicon.found) issues.push("No favicon found (neither a <link rel=icon> nor /favicon.ico)");
-      if (!appleTouchIcon.found) issues.push("No apple-touch-icon found — iOS home-screen bookmarks will use a low-quality fallback");
-      if (!manifest.found) issues.push("No web app manifest found — site won't be installable as a PWA");
-      if (!themeColor) issues.push("No theme-color meta tag — browser chrome won't match site branding on mobile");
-
-      return {
-        url,
-        favicon: effectiveFavicon,
-        appleTouchIcon,
-        manifest,
-        themeColor,
-        issues,
-      };
-    },
-  },
-
-  json_ld_schema_validator: {
-    price: "$0.01",
-    description:
-      "Fetch a URL, extract every JSON-LD (<script type=\"application/ld+json\">) block, and validate basic structure — @context/@type presence plus required fields for common schema.org types (Article, Product, Organization, WebSite, LocalBusiness, BreadcrumbList, FAQPage). Reports per-block errors rather than failing the whole call on one bad block.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "The URL to check" },
-      },
-      required: ["url"],
-    },
-    async run({ url }: { url: string }) {
-      const html = await fetchText(url);
-      const blocks = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
-
-      const results = blocks.map((m, i) => {
-        try {
-          const parsed = JSON.parse(m[1].trim());
-          const items = Array.isArray(parsed) ? parsed : (parsed["@graph"] ?? [parsed]);
-          return items.map((item: any, j: number) => validateJsonLdBlock(item, blocks.length > 1 ? i : j));
-        } catch (e: any) {
-          return [{ index: i, types: [], valid: false, errors: [`Invalid JSON: ${e?.message ?? String(e)}`] }];
-        }
-      }).flat();
-
-      return {
-        url,
-        blocksFound: blocks.length,
-        entriesValidated: results.length,
-        validCount: results.filter((r) => r.valid).length,
-        invalidCount: results.filter((r) => !r.valid).length,
-        results,
-      };
-    },
-  },
-
-  sitemap_url_validator: {
-    price: "$0.01",
-    description:
-      "Parse a site's sitemap.xml (following one level of sitemap-index nesting) and check the HTTP status of every listed URL. Concurrency-limited, capped at 200 URLs checked per call. Reports broken/redirecting URLs found in the sitemap.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL of the sitemap.xml to validate (or any page URL — /sitemap.xml on that origin is used)" },
-      },
-      required: ["url"],
-    },
-    async run({ url }: { url: string }) {
-      const sitemapUrl = url.endsWith(".xml") ? url : `${new URL(url).origin}/sitemap.xml`;
-      const rootXml = await fetchSitemapXml(sitemapUrl);
-
-      let locs: string[];
-      let sitemapsFollowed = 1;
-      if (isSitemapIndex(rootXml)) {
-        const childSitemaps = extractSitemapLocs(rootXml).slice(0, 20);
-        const childXmls = await mapWithConcurrency(childSitemaps, 5, (u) => fetchSitemapXml(u).catch(() => ""));
-        locs = childXmls.flatMap((xml) => (xml ? extractSitemapLocs(xml) : []));
-        sitemapsFollowed += childSitemaps.length;
-      } else {
-        locs = extractSitemapLocs(rootXml);
+      if (!hasRobots) issues.push("No robots.txt — AI crawlers default to crawling everything; add one with explicit AI-crawler rules");
+      else if (mentioned === 0 && !policy?.wildcardDisallowsAll) issues.push("robots.txt states no explicit policy for any known AI crawler — your stance toward AI training/search crawlers is implicit, not chosen");
+      else if (mentioned < totalAgents) issues.push(`Explicit AI-crawler rules cover ${mentioned} of ${totalAgents} known crawlers`);
+      if (!llmsPresent) issues.push("No llms.txt — the emerging convention for giving AI systems a curated summary of your content");
+      else {
+        if (!llmsHasHeading) issues.push("llms.txt has no Markdown heading structure");
+        if (!llmsHasLinks) issues.push("llms.txt contains no Markdown links to key pages");
+        if (!llmsSizeable) issues.push("llms.txt is very short (<200 chars) — likely a stub");
       }
+      if (!hasJsonLd) issues.push("No JSON-LD structured data — agents extract facts less reliably from raw HTML");
+      if (!hasOg) issues.push("No Open Graph tags — link previews in AI/chat surfaces will be poor");
+      if (!x402Ok && !openapiOk) issues.push("No machine-readable API/payment discovery (/.well-known/x402 or /openapi.json) — agents cannot find paid/programmatic access");
+      if (!hasSitemap) issues.push("No sitemap.xml — crawlers and agents must discover pages by following links");
+      if (!hasTitle) issues.push("Homepage is missing a <title>");
+      if (!hasDescription) issues.push("Homepage is missing a meta description");
 
-      const uniqueLocs = [...new Set(locs)];
-      const capped = uniqueLocs.slice(0, 200);
-      const statuses = await mapWithConcurrency(capped, 8, (u) => checkLinkStatus(u));
-
-      const broken = capped
-        .map((u, i) => ({ url: u, ...statuses[i] }))
-        .filter((r) => !r.ok);
-
-      return {
-        sitemapUrl,
-        sitemapsFollowed,
-        urlsFound: uniqueLocs.length,
-        urlsChecked: capped.length,
-        urlsTruncated: uniqueLocs.length > capped.length,
-        brokenCount: broken.length,
-        brokenUrls: broken,
-      };
+      return { url, origin, score, grade, components, issues };
     },
   },
 };

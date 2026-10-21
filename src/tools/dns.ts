@@ -36,6 +36,68 @@ function resolveWith(server: string, domain: string, type: RecordType): Promise<
   });
 }
 
+const TLD_WHOIS_SERVERS: Record<string, string> = {
+  com: "whois.verisign-grs.com",
+  net: "whois.verisign-grs.com",
+  org: "whois.pir.org",
+  io: "whois.identity.digital",
+  info: "whois.identity.digital",
+  co: "whois.nic.co",
+  ai: "whois.nic.ai",
+  app: "whois.nic.google",
+  dev: "whois.nic.google",
+  me: "whois.nic.me",
+  tv: "whois.nic.tv",
+  biz: "whois.nic.biz",
+  us: "whois.nic.us",
+  xyz: "whois.nic.xyz",
+  site: "whois.nic.site",
+  online: "whois.nic.online",
+  tech: "whois.nic.tech",
+};
+
+const WHOIS_EXPIRY_LABELS = [
+  "Registry Expiry Date",
+  "Registrar Registration Expiration Date",
+  "Expiration Date",
+  "Expiry Date",
+  "Renewal Date",
+  "paid-till",
+];
+const WHOIS_CREATED_LABELS = ["Creation Date", "Created On", "Domain Registration Date", "Registered On", "created"];
+const WHOIS_REGISTRAR_LABELS = ["Registrar:", "Registrar Name", "Sponsoring Registrar", "sponsoring registrar"];
+
+async function registryWhois(domain: string): Promise<{ server: string; raw: string }> {
+  // Query the TLD registry whois directly when known. whois.iana.org cannot be
+  // relied on for a referral: for some domains (e.g. example.com) its response
+  // is a stub with no "refer:" line at all, which used to leave registrar and
+  // expiry permanently null.
+  const tld = domain.split(".").pop()?.toLowerCase() ?? "";
+  let server = TLD_WHOIS_SERVERS[tld];
+  if (!server) {
+    const ianaRaw = await whoisQuery("whois.iana.org", domain);
+    server = extractWhoisField(ianaRaw, ["refer", "whois"]) || "whois.iana.org";
+    if (server === "whois.iana.org") return { server, raw: ianaRaw };
+  }
+  let raw = await whoisQuery(server, domain);
+  // Thin registries (e.g. Verisign for .com/.net) sometimes omit fields that
+  // only the registrar record has; follow one more hop when expiry is missing.
+  if (!extractWhoisField(raw, WHOIS_EXPIRY_LABELS)) {
+    const registrarServer = extractWhoisField(raw, ["Registrar WHOIS Server"]);
+    if (registrarServer && registrarServer.toLowerCase() !== server.toLowerCase()) {
+      try {
+        const registrarRaw = await whoisQuery(registrarServer, domain);
+        if (extractWhoisField(registrarRaw, WHOIS_EXPIRY_LABELS)) {
+          return { server: registrarServer, raw: registrarRaw };
+        }
+      } catch {
+        // keep the registry response
+      }
+    }
+  }
+  return { server, raw };
+}
+
 async function lookupDomainWhois(domain: string): Promise<{
   registrar: string | null;
   createdDate: string | null;
@@ -45,28 +107,11 @@ async function lookupDomainWhois(domain: string): Promise<{
   whoisServer: string | null;
   raw?: string;
 }> {
-  const ianaRaw = await whoisQuery("whois.iana.org", domain);
-  const referral = extractWhoisField(ianaRaw, ["refer", "whois"]);
-  const server = referral || "whois.iana.org";
+  const { server, raw } = await registryWhois(domain);
 
-  let raw = ianaRaw;
-  if (referral && referral !== "whois.iana.org") {
-    try {
-      raw = await whoisQuery(referral, domain);
-    } catch {
-      // fall back to the IANA response if the registry's own whois is unreachable
-    }
-  }
-
-  const expiryRaw = extractWhoisField(raw, [
-    "Registry Expiry Date",
-    "Registrar Registration Expiration Date",
-    "Expiration Date",
-    "Expiry Date",
-    "paid-till",
-  ]);
-  const createdRaw = extractWhoisField(raw, ["Creation Date", "Created On", "Domain Registration Date", "created"]);
-  const registrar = extractWhoisField(raw, ["Registrar:", "Registrar Name", "sponsoring registrar"]);
+  const expiryRaw = extractWhoisField(raw, WHOIS_EXPIRY_LABELS);
+  const createdRaw = extractWhoisField(raw, WHOIS_CREATED_LABELS);
+  const registrar = extractWhoisField(raw, WHOIS_REGISTRAR_LABELS);
 
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
   const daysRemaining =
@@ -85,11 +130,25 @@ async function lookupDomainWhois(domain: string): Promise<{
   };
 }
 
+function extractAllWhoisField(raw: string, labels: string[]): string[] {
+  const out: string[] = [];
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    for (const label of labels) {
+      if (line.toLowerCase().startsWith(label.toLowerCase())) {
+        const value = line.slice(line.indexOf(":") + 1).trim();
+        if (value && !out.includes(value)) out.push(value);
+      }
+    }
+  }
+  return out;
+}
+
 function reverseIpv4(ip: string): string {
   return ip.split(".").reverse().join(".");
 }
 
-async function cymruAsnLookup(ip: string): Promise<{
+export async function cymruAsnLookup(ip: string): Promise<{
   asn: string | null;
   prefix: string | null;
   countryCode: string | null;
@@ -137,7 +196,10 @@ function countSpfLookups(spf: string): number {
 }
 
 async function reverseDns(ip: string): Promise<string[]> {
-  return withTimeout(dns.reverse(ip), 4000).catch(() => []);
+  // dns.reverse() (getnameinfo) silently returns [] on some systems even when a
+  // PTR record exists; an explicit PTR query is reliable, so use that.
+  const ptrName = `${reverseIpv4(ip)}.in-addr.arpa`;
+  return withTimeout(dns.resolvePtr(ptrName), 4000).catch(() => []);
 }
 
 function isDnsblErrorCode(codes: string[]): boolean {
@@ -155,14 +217,23 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-async function dnsblLookup(ip: string, zone: string): Promise<{ listed: boolean | null; codes: string[] }> {
+async function dnsblLookup(
+  ip: string,
+  zone: string
+): Promise<{ listed: boolean | null; codes: string[]; note: string | null }> {
   try {
     const codes = await withTimeout(dns.resolve4(`${reverseIpv4(ip)}.${zone}`), 2500);
-    if (isDnsblErrorCode(codes)) return { listed: null, codes };
-    return { listed: true, codes };
+    if (isDnsblErrorCode(codes)) {
+      return {
+        listed: null,
+        codes,
+        note: "The list operator refused this query (127.255.255.x = query sent via a public/blocked resolver), so listed status is unknown, not clean. A Spamhaus DQS key or a non-public resolver is required for a definitive answer.",
+      };
+    }
+    return { listed: true, codes, note: null };
   } catch (e: any) {
-    if (e?.code === "ENOTFOUND" || e?.code === "ENODATA") return { listed: false, codes: [] };
-    return { listed: null, codes: [] };
+    if (e?.code === "ENOTFOUND" || e?.code === "ENODATA") return { listed: false, codes: [], note: null };
+    return { listed: null, codes: [], note: "DNSBL query failed or timed out; listed status unknown." };
   }
 }
 
@@ -243,14 +314,12 @@ function generateTypoVariants(label: string): Set<string> {
 
 async function isDomainRegistered(domain: string): Promise<boolean | null> {
   try {
-    const raw = await whoisQuery("whois.iana.org", domain);
-    const referral = extractWhoisField(raw, ["refer", "whois"]);
-    if (!referral) {
-      // No referring registry whois server usually means the TLD has no matching record, i.e. unregistered
-      return /No match|NOT FOUND|no entries found/i.test(raw) ? false : null;
+    const { raw } = await registryWhois(domain);
+    if (/No match|NOT FOUND|No Data Found|no entries found|Domain not found|Status:\s*free|is available/i.test(raw)) {
+      return false;
     }
-    const registryRaw = await whoisQuery(referral, domain);
-    return !/No match|NOT FOUND|No Data Found|no entries found|Domain not found|Status:\s*free/i.test(registryRaw);
+    if (/Domain Name:|Creation Date:|Registrar:/i.test(raw)) return true;
+    return null;
   } catch {
     return null;
   }
@@ -258,9 +327,9 @@ async function isDomainRegistered(domain: string): Promise<boolean | null> {
 
 export const tools = {
   domain_health_check: {
-    price: "$0.01",
+    price: "$0.05",
     description:
-      "Check a domain's registration expiry (via WHOIS) and DNS health: nameservers, A/AAAA, MX, SPF, and DMARC records. Flags common misconfigurations.",
+      "Check a domain's registration expiry (via WHOIS) and DNS health: nameservers, A/AAAA, MX, SPF, and DMARC records. Flags common misconfigurations. WHOIS + DNS only — for the WHOIS record alone use whois_lookup; for deliverability detail (DKIM, DNSBL, PTR) use email_deliverability_check; for all of it plus SEO in one report use domain_report.",
     inputSchema: {
       type: "object",
       properties: {
@@ -319,32 +388,8 @@ export const tools = {
     },
   },
 
-  ip_geolocation_asn_lookup: {
-    price: "$0.01",
-    description:
-      "Resolve a hostname to its IPv4 addresses and look up each one's ASN, network prefix, country code, and network owner via Team Cymru's DNS-based WHOIS service (no API key). Country-level only — not city/street geolocation.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        host: { type: "string", description: "Hostname or bare IPv4 address to look up" },
-      },
-      required: ["host"],
-    },
-    async run({ host }: { host: string }) {
-      const clean = host.replace(/^https?:\/\//, "").split("/")[0];
-      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(clean);
-      const ips = isIp ? [clean] : await dns.resolve4(clean).catch(() => [] as string[]);
-
-      if (!ips.length) throw new Error(`Could not resolve any IPv4 address for ${clean}`);
-
-      const results = await Promise.all(ips.map(async (ip) => ({ ip, ...(await cymruAsnLookup(ip)) })));
-
-      return { host: clean, ips, results };
-    },
-  },
-
   email_deliverability_check: {
-    price: "$0.01",
+    price: "$0.05",
     description:
       "Deep-dive email deliverability check for a domain: MX records + reverse-DNS (PTR) on each MX host, common DKIM selector probing, SPF lookup-count (RFC 7208 caps at 10), DMARC policy strength, and DNSBL blacklist lookups (Spamhaus Zen, SpamCop, Barracuda) on MX IPs. Note: public-resolver DNSBL queries are frequently rate-limited or blocked by Spamhaus, so a `listed: null` result means \"unknown\", not \"clean\" — treat null results as inconclusive, not as a clean bill of health.",
     inputSchema: {
@@ -413,6 +458,42 @@ export const tools = {
     },
   },
 
+  whois_lookup: {
+    price: "$0.01",
+    description:
+      "Look up a domain's WHOIS registration record: registrar, creation and expiry dates, days remaining, name servers, and domain statuses, direct from the TLD registry. Registration data only — for DNS/mail health as well, use domain_health_check; for a combined report, use domain_report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Bare domain to look up, e.g. example.com (no scheme/path)" },
+      },
+      required: ["domain"],
+    },
+    async run({ domain }: { domain: string }) {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+      const { server, raw } = await registryWhois(cleanDomain);
+      const registered = /Domain Name:|Creation Date:|Registrar:/i.test(raw)
+        ? true
+        : /No match|NOT FOUND|No Data Found|no entries found|Domain not found/i.test(raw)
+          ? false
+          : null;
+      const whois = await lookupDomainWhois(cleanDomain).catch(() => null);
+      return {
+        domain: cleanDomain,
+        registered,
+        registrar: whois?.registrar ?? null,
+        createdDate: whois?.createdDate ?? null,
+        expiryDate: whois?.expiryDate ?? null,
+        daysRemaining: whois?.daysRemaining ?? null,
+        expired: whois?.expired ?? null,
+        nameServers: extractAllWhoisField(raw, ["Name Server", "Nameserver", "nserver"]),
+        statuses: extractAllWhoisField(raw, ["Domain Status", "status"]),
+        whoisServer: server,
+        raw: raw.slice(0, 2000),
+      };
+    },
+  },
+
   domain_availability_check: {
     price: "$0.01",
     description:
@@ -460,6 +541,73 @@ export const tools = {
       };
     },
   },
+  subdomain_discovery: {
+    price: "$0.05",
+    description:
+      "Enumerate a domain's subdomains from public Certificate Transparency logs (crt.sh, with a Cert Spotter fallback): every hostname that has ever appeared on a certificate for the domain. Passive reconnaissance - no packets are sent to the target. Useful for attack-surface reviews, migration inventories, and finding forgotten test/staging hosts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Bare domain to enumerate, e.g. example.com (no scheme/path)" },
+      },
+      required: ["domain"],
+    },
+    async run({ domain }: { domain: string }) {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+
+      const names = new Set<string>();
+      let source: string | null = null;
+
+      try {
+        const res = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(cleanDomain)}&output=json`, {
+          headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" },
+          signal: AbortSignal.timeout(25000),
+        });
+        if (res.ok) {
+          const data: any[] = await res.json();
+          for (const entry of data) {
+            for (const field of [entry.name_value, entry.common_name]) {
+              if (!field) continue;
+              for (const n of String(field).split("\n")) {
+                const name = n.trim().toLowerCase().replace(/^\*\./, "");
+                if (name.endsWith(cleanDomain)) names.add(name);
+              }
+            }
+          }
+          if (names.size) source = "crt.sh";
+        }
+      } catch {
+        // fall through to the fallback source
+      }
+
+      if (!names.size) {
+        const res = await fetch(
+          `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(cleanDomain)}&include_subdomains=true&expand=dns_names`,
+          { headers: { "User-Agent": "mcp-toolbelt/1.0 (+https://papacasper.com/mcp)" }, signal: AbortSignal.timeout(25000) }
+        );
+        if (!res.ok) throw new Error(`Certificate Transparency lookup failed (crt.sh unreachable, Cert Spotter returned ${res.status})`);
+        const data: any[] = await res.json();
+        for (const entry of data) {
+          for (const n of entry.dns_names ?? []) {
+            const name = String(n).toLowerCase().replace(/^\*\./, "");
+            if (name.endsWith(cleanDomain)) names.add(name);
+          }
+        }
+        source = "certspotter";
+      }
+
+      const subdomains = [...names].sort();
+      return {
+        domain: cleanDomain,
+        source,
+        totalFound: subdomains.length,
+        subdomains: subdomains.slice(0, 500),
+        truncated: subdomains.length > 500,
+        note: "Names come from certificates issued historically; a listed subdomain may no longer resolve, and hosts without certificates are invisible here.",
+      };
+    },
+  },
+
 };
 
 export type ToolName = keyof typeof tools;
