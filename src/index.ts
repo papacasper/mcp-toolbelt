@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { paymentMiddlewareFromConfig } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/http";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { tools } from "./tools";
 import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
 import { dashboardHtml } from "./dashboard";
@@ -45,6 +46,40 @@ app.get("/dashboard-data", (c) => {
 // Payment-gated REST entrypoint — one route per tool, priced via x402.
 // Separate from the JSON-RPC endpoint below since the x402 middleware gates by HTTP path,
 // and MCP's tools/list vs tools/call distinction lives inside a single JSON-RPC body.
+// Example argument values for x402 Bazaar discovery metadata: each /pay/* route
+// declares how to call it (a real, minimal example built from the tool's schema),
+// so facilitators that run a discovery index can catalog the tool after settlement.
+function exampleValue(prop: string, schema: any): unknown {
+  if (Array.isArray(schema?.enum) && schema.enum.length) return schema.enum[0];
+  const byName: Record<string, unknown> = {
+    domain: "example.com", hostname: "example.com", host: "example.com",
+    url: "https://example.com", email: "user@example.com",
+    ip: "192.0.2.1", address: "192.0.2.1",
+    package: "express", repo: "papacasper/mcp-toolbelt", repository: "papacasper/mcp-toolbelt",
+    username: "example", query: "example.com", target: "example.com", server: "example.com",
+  };
+  if (prop in byName) return byName[prop];
+  switch (schema?.type) {
+    case "number": case "integer": return 1;
+    case "boolean": return true;
+    case "array": return [exampleValue(prop, schema?.items ?? {})];
+    case "object": return {};
+    default: return "example.com";
+  }
+}
+function exampleInput(def: any): Record<string, unknown> {
+  const schema = def?.inputSchema ?? {};
+  const props = schema.properties ?? {};
+  const required: string[] = schema.required ?? [];
+  const out: Record<string, unknown> = {};
+  for (const key of required) out[key] = exampleValue(key, props[key] ?? {});
+  if (Object.keys(out).length === 0) {
+    const first = Object.keys(props)[0];
+    if (first) out[first] = exampleValue(first, props[first]);
+  }
+  return out;
+}
+
 if (X402_PAY_TO) {
   const perToolRoutes = Object.fromEntries(
     Object.entries(tools).map(([name, def]) => [
@@ -59,6 +94,12 @@ if (X402_PAY_TO) {
         resource: `${X402_PUBLIC_BASE_URL}/pay/${name}`,
         description: (def as any).description ?? "",
         mimeType: "application/json",
+        extensions: declareDiscoveryExtension({
+          method: "POST",
+          bodyType: "json",
+          input: exampleInput(def),
+          inputSchema: (def as any).inputSchema,
+        }),
       },
     ])
   );
