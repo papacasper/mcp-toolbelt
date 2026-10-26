@@ -189,9 +189,9 @@ app.post("/", async (c) => {
 
   // API-key gate only on tools/call — initialize/tools/list stay open so directories
   // and agents can discover tools without a key before deciding to pay per call.
-  if (API_KEY && method === "tools/call") {
+  if (method === "tools/call") {
     const provided = c.req.header("x-api-key") ?? "";
-    if (provided !== API_KEY) {
+    if (!(API_KEY && provided === API_KEY)) {
       // No valid free-access key — fall through to x402 pay-per-call instead of a flat 401,
       // so standard MCP clients (Smithery, Glama, Claude Desktop) can actually pay for tools/call.
       const name = params?.name as string | undefined;
