@@ -22,6 +22,8 @@ const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true, service: "mcp-toolbelt" }));
 
+app.get("/", (c) => c.html("<!doctype html><html><head><title>MCP Toolbelt</title></head><body><h1>MCP Toolbelt</h1><p>This is an MCP server endpoint. It speaks MCP over Streamable HTTP, so connect an MCP client to https://papacasper.com/mcp. Opening this URL in a browser does not show a tool list.</p><p>Tools available: " + Object.keys(tools).length + ". Calls are pay-per-call via x402 (USDC on Base); tools/list is open for discovery.</p></body></html>"));
+
 function requireApiKey(c: any): Response | null {
   if (!API_KEY) return null;
   const provided = c.req.header("x-api-key") ?? c.req.query("key") ?? "";
