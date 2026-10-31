@@ -1,6 +1,20 @@
 # mcp-toolbelt
 
-Public x402 pay-per-call MCP server behind `https://papacasper.com/mcp/`.
+Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 29 DNS, SEO, SSL,
+security, WHOIS, mail, and AI tools for AI agents. `initialize` and `tools/list` are open; `tools/call`
+is paid one of two ways:
+
+## Payment options
+
+1. **x402 pay-per-call** - USDC on Base, no account or API key needed. An unpaid call returns
+   HTTP 402 with the x402 payment requirements.
+2. **Card-paid API key** (via Polar) - send `Authorization: Bearer mcptb_...` (or `x-api-key: mcptb_...`).
+   Each call uses its normal price in credits (cheap tools 1 credit, `domain_report` 25).
+   - Starter: $9/month, 2,000 credits - https://buy.polar.sh/polar_cl_ohAX5VD8UYJGDHAjfP8Y5jowuK2nRQu0jb2XU3c9PBm
+   - Pro: $29/month, 10,000 credits - https://buy.polar.sh/polar_cl_NSE3CdNGwKv97h1v4Koj5mQqMt0ow8CR8oJdR19py6p
+
+   The key is emailed right after checkout. When a key runs out of credits or its subscription
+   ends, calls fall back to x402. Docs: https://papacasper.com/mcp-docs#api-key
 
 ## Discovery documents
 

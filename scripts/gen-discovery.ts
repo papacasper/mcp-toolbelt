@@ -45,11 +45,10 @@ const openapi = {
   info: {
     title: "mcp-toolbelt",
     version: "1.0.0",
-    description: "Pay-per-call web, SEO, DNS, and network tools via the x402 protocol.",
+    description:
+      "Web, SEO, DNS, SSL, security, and mail tools for AI agents. Pay per call via x402 (USDC on Base), or use a card-paid API key (Authorization: Bearer mcptb_... or x-api-key) from https://papacasper.com/mcp-docs#api-key",
     "x-guidance":
-      "POST JSON to /pay/<tool-name> with the tool's input fields as the request body. " +
-      "Each tool is priced individually via x402 (see x-payment-info per operation). " +
-      "Call GET /openapi.json for the full list of tools, their input schemas, and prices.",
+      "POST JSON to /pay/<tool-name> with the tool's input fields as the request body. Each tool is priced individually via x402 (see x-payment-info per operation). Alternatively send a card-paid API key as `Authorization: Bearer mcptb_...` or `x-api-key: mcptb_...` (Starter $9/mo 2,000 credits, Pro $29/mo 10,000 credits; see https://papacasper.com/mcp-docs#api-key). Call GET /openapi.json for the full list of tools, their input schemas, and prices.",
     contact: { email: "contact@papacasper.com" },
   },
   servers: [{ url: ORIGIN }],

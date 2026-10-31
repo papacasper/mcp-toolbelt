@@ -7,6 +7,7 @@ import { tools } from "./tools";
 import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
 import { dashboardHtml } from "./dashboard";
 import { installFetchGuard } from "./tools/ssrf-guard";
+import { chargeKey, refundKey, creditsForPrice, periodResetsAt, CHECKOUT_LINKS } from "./apikeys";
 
 installFetchGuard();
 
@@ -22,7 +23,7 @@ const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true, service: "mcp-toolbelt" }));
 
-app.get("/", (c) => c.html("<!doctype html><html><head><title>MCP Toolbelt</title></head><body><h1>MCP Toolbelt</h1><p>This is an MCP server endpoint. It speaks MCP over Streamable HTTP, so connect an MCP client to https://papacasper.com/mcp. Opening this URL in a browser does not show a tool list.</p><p>Tools available: " + Object.keys(tools).length + ". Calls are pay-per-call via x402 (USDC on Base); tools/list is open for discovery.</p></body></html>"));
+app.get("/", (c) => c.html("<!doctype html><html><head><title>MCP Toolbelt</title></head><body><h1>MCP Toolbelt</h1><p>This is an MCP server endpoint. It speaks MCP over Streamable HTTP, so connect an MCP client to https://papacasper.com/mcp. Opening this URL in a browser does not show a tool list.</p><p>Tools available: " + Object.keys(tools).length + ". Calls are pay-per-call via x402 (USDC on Base), or use a card-paid API key (Authorization: Bearer &lt;key&gt;) from https://papacasper.com/mcp-docs#api-key. tools/list is open for discovery.</p></body></html>"));
 
 function requireApiKey(c: any): Response | null {
   if (!API_KEY) return null;
@@ -82,6 +83,47 @@ function exampleInput(def: any): Record<string, unknown> {
   return out;
 }
 
+// ---- Card-paid API keys (Polar subscription) ------------------------------------------
+// A customer key (mcptb_…) sent as `Authorization: Bearer <key>` or `x-api-key: <key>`
+// bypasses x402 while it has monthly credits left. No key -> x402 exactly as before.
+// Invalid / disabled / over-quota key -> the normal x402 402 response plus an `apiKey` note.
+function customerKeyFrom(c: any): string | null {
+  const auth = c.req.header("authorization") ?? "";
+  const m = auth.match(/^Bearer\s+(mcptb_[A-Za-z0-9_-]+)\s*$/i);
+  if (m) return m[1];
+  const x = c.req.header("x-api-key") ?? "";
+  return x.startsWith("mcptb_") ? x.trim() : null;
+}
+
+function keyFailureNote(reason: string, row?: any, needed?: number) {
+  const upgrade = CHECKOUT_LINKS.pro;
+  const messages: Record<string, string> = {
+    invalid: "API key not recognised. Falling back to x402 pay-per-call.",
+    disabled: "API key is disabled (subscription ended). Falling back to x402 pay-per-call. Resubscribe: " + CHECKOUT_LINKS.starter,
+    over_quota: `Not enough monthly API credits left for this call (needs ${needed ?? "?"}, ${row ? Math.max(0, row.monthly_credits - row.used_credits) : "?"} of ${row?.monthly_credits ?? "?"} left); credits reset ${row ? new Date(periodResetsAt(row)).toISOString() : "next period"}. Falling back to x402 pay-per-call. Upgrade to Pro (10,000 credits/mo): ${upgrade}`,
+  };
+  return { error: reason, message: messages[reason] ?? reason, plans: CHECKOUT_LINKS, docs: "https://papacasper.com/mcp-docs#api-key" };
+}
+
+async function runWithKey(c: any, key: string, name: string, args: any) {
+  const credits = creditsForPrice((tools as any)[name]?.price ?? X402_PRICE);
+  const charge = chargeKey(key, credits);
+  if (!charge.ok) return { ok: false as const, note: keyFailureNote(charge.reason, charge.row, credits) };
+  const started = Date.now();
+  c.header("X-API-Credits-Remaining", String(charge.remaining));
+  c.header("X-API-Credits-Charged", String(credits));
+  try {
+    const output = await (tools as any)[name].run(args);
+    logCall({ tool: name, transport: "key" as any, success: true, durationMs: Date.now() - started });
+    return { ok: true as const, output };
+  } catch (err: any) {
+    refundKey(charge.row.id, credits);
+    c.header("X-API-Credits-Remaining", String(charge.remaining + credits));
+    logCall({ tool: name, transport: "key" as any, success: false, durationMs: Date.now() - started, error: err?.message ?? String(err) });
+    return { ok: true as const, error: err?.message ?? String(err) };
+  }
+}
+
 if (X402_PAY_TO) {
   const perToolRoutes = Object.fromEntries(
     Object.entries(tools).map(([name, def]) => [
@@ -105,6 +147,31 @@ if (X402_PAY_TO) {
       },
     ])
   );
+
+  // Customer API key on the REST routes: serve directly (no x402) when the key has credits.
+  app.use("/pay/*", async (c, next) => {
+    const key = customerKeyFrom(c);
+    if (!key || c.req.method !== "POST") return next();
+    const name = c.req.path.replace(/^.*\/pay\//, "");
+    if (!name || !(name in tools)) return next();
+    let args: any = {};
+    try { args = await c.req.raw.clone().json(); } catch {}
+    const r = await runWithKey(c, key, name, args);
+    if (!r.ok) {
+      c.header("X-API-Key-Status", r.note.error);
+      await next();
+      if (c.res.status === 402) {
+        try {
+          const body = await c.res.clone().json();
+          const headers = new Headers(c.res.headers);
+          c.res = new Response(JSON.stringify({ ...body, apiKey: r.note }), { status: 402, headers });
+        } catch {}
+      }
+      return;
+    }
+    if ("error" in r && r.error) return c.json({ error: r.error }, 502);
+    return c.json(r.output);
+  });
 
   app.use(
     "/pay/*",
@@ -193,6 +260,23 @@ app.post("/", async (c) => {
   // and agents can discover tools without a key before deciding to pay per call.
   if (method === "tools/call") {
     const provided = c.req.header("x-api-key") ?? "";
+    let apiKeyNote: any = null;
+    const customerKey = API_KEY && provided === API_KEY ? null : customerKeyFrom(c);
+    if (customerKey) {
+      const name = params?.name as string | undefined;
+      if (!name || !(name in tools)) {
+        return c.json(rpcError(id, -32602, `Unknown tool: ${name}`), 400);
+      }
+      const r = await runWithKey(c, customerKey, name, params?.arguments ?? {});
+      if (r.ok) {
+        if ("error" in r && r.error) {
+          return c.json(rpcResult(id, { content: [{ type: "text", text: `Error: ${r.error}` }], isError: true }));
+        }
+        return c.json(rpcResult(id, { content: [{ type: "text", text: JSON.stringify((r as any).output, null, 2) }], isError: false }));
+      }
+      apiKeyNote = r.note; // fall through to x402 below
+      c.header("X-API-Key-Status", r.note.error);
+    }
     if (!(API_KEY && provided === API_KEY)) {
       // No valid free-access key — fall through to x402 pay-per-call instead of a flat 401,
       // so standard MCP clients (Smithery, Glama, Claude Desktop) can actually pay for tools/call.
@@ -205,6 +289,7 @@ app.post("/", async (c) => {
       }
       const payHeaders = new Headers(c.req.raw.headers);
       payHeaders.set("content-type", "application/json");
+      if (customerKey) { payHeaders.delete("authorization"); payHeaders.delete("x-api-key"); } // already tried above
       const payResponse = await app.request(`/pay/${name}`, {
         method: "POST",
         headers: payHeaders,
@@ -216,7 +301,7 @@ app.post("/", async (c) => {
         const paymentRequiredHeader = payResponse.headers.get("payment-required");
         if (paymentRequiredHeader) c.header("payment-required", paymentRequiredHeader);
         const challenge = await payResponse.json().catch(() => ({}));
-        return c.json(challenge, 402);
+        return c.json(apiKeyNote ? { ...challenge, apiKey: apiKeyNote } : challenge, 402);
       }
       const output = await payResponse.json();
       if (!payResponse.ok) {
@@ -233,7 +318,8 @@ app.post("/", async (c) => {
           rpcResult(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "mcp-toolbelt", version: "1.0.0" },
+            serverInfo: { name: "mcp-toolbelt", version: "1.3.1" },
+            instructions: "29 DNS, SEO, SSL, security, WHOIS, mail, and AI tools. tools/list is free. tools/call is paid either per call via x402 (USDC on Base, no account) or with a card-paid API key sent as `Authorization: Bearer mcptb_...` or `x-api-key`: Starter $9/mo 2,000 credits https://buy.polar.sh/polar_cl_ohAX5VD8UYJGDHAjfP8Y5jowuK2nRQu0jb2XU3c9PBm ; Pro $29/mo 10,000 credits https://buy.polar.sh/polar_cl_NSE3CdNGwKv97h1v4Koj5mQqMt0ow8CR8oJdR19py6p ; docs https://papacasper.com/mcp-docs#api-key",
           })
         );
 

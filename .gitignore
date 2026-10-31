@@ -3,3 +3,4 @@ dist/
 .env
 *.log
 metrics.db
+apikeys.db*
