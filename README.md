@@ -4,6 +4,8 @@ Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 29 DNS
 security, WHOIS, mail, and AI tools for AI agents. `initialize` and `tools/list` are open; `tools/call`
 is paid one of two ways:
 
+[![MCP Toolbelt - Listed on Claude AI Directory](https://www.claudeai.directory/badge/mcp-toolbelt)](https://www.claudeai.directory/launches/mcp-toolbelt)
+
 ## Payment options
 
 1. **x402 pay-per-call** - USDC on Base, no account or API key needed. An unpaid call returns
