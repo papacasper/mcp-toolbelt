@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.papacasper/mcp-toolbelt",
   "title": "mcp-toolbelt",
-  "description": "29 DNS, SEO, SSL, security, WHOIS & mail tools for AI agents. Pay per call (x402) or card API key.",
-  "version": "1.3.1",
+  "description": "37 agent tools: DNS, SEO, SSL, WHOIS, mail, screenshots, PDF, validation. x402 or card API key.",
+  "version": "1.4.0",
   "remotes": [
     {
       "type": "streamable-http",

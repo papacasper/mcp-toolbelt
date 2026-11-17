@@ -1,7 +1,7 @@
 # mcp-toolbelt
 
-Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 29 DNS, SEO, SSL,
-security, WHOIS, mail, and AI tools for AI agents. `initialize` and `tools/list` are open; `tools/call`
+Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 37 DNS, SEO, SSL,
+security, WHOIS, mail, AI-readiness, rendering, validation, and conversion tools for AI agents. `initialize` and `tools/list` are open; `tools/call`
 is paid one of two ways:
 
 [![MCP Toolbelt - Listed on Claude AI Directory](https://www.claudeai.directory/badge/mcp-toolbelt)](https://www.claudeai.directory/launches/mcp-toolbelt)
@@ -34,3 +34,12 @@ bun run scripts/gen-discovery.ts
 Payments run on x402 v2 via `@x402/hono`, facilitated by `https://facilitator.xpay.sh`
 (zero fees, gas-sponsored, no API key) on Base mainnet (`eip155:8453`). Configured through
 `X402_FACILITATOR_URL` and `X402_NETWORK` env vars.
+
+## Binary outputs (screenshots, PDFs, images)
+
+`website_screenshot`, `html_to_pdf`, and `image_resize` write their output to `.files/` (gitignored)
+and return a short-lived URL, `https://papacasper.com/mcp/files/<random>.<ext>`, valid for 1 hour,
+plus byte size and SHA-256. Pass `includeBase64: true` to get the bytes inline (capped at 3 MB).
+Rendering uses `chrome-headless-shell` (installed with `bunx @puppeteer/browsers install
+chrome-headless-shell@stable --path ~/.cache/puppeteer`, or set `CHROME_PATH`), max 2 concurrent
+renders, and every browser request is checked against the same private-address guard as `fetch`.

@@ -4,3 +4,5 @@ dist/
 *.log
 metrics.db
 apikeys.db*
+.files/
+*.bak*

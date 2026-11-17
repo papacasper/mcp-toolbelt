@@ -7,6 +7,7 @@ import { tools } from "./tools";
 import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
 import { dashboardHtml } from "./dashboard";
 import { installFetchGuard } from "./tools/ssrf-guard";
+import { readStoredFile } from "./tools/files";
 import { chargeKey, refundKey, creditsForPrice, periodResetsAt, CHECKOUT_LINKS } from "./apikeys";
 
 installFetchGuard();
@@ -33,6 +34,21 @@ function requireApiKey(c: any): Response | null {
 }
 
 app.get("/dashboard", (c) => c.html(dashboardHtml));
+
+// Short-lived binary outputs (screenshots, PDFs, resized images). Unguessable names, 1-hour TTL.
+app.get("/files/:name", (c) => {
+  const file = readStoredFile(c.req.param("name"));
+  if (!file) return c.json({ error: "not found or expired" }, 404);
+  return new Response(file.body, {
+    headers: {
+      "content-type": file.contentType,
+      "cache-control": "private, max-age=3600",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src none; img-src self; style-src unsafe-inline; sandbox",
+      "content-disposition": "inline",
+    },
+  });
+});
 
 function toolPricing() {
   return Object.fromEntries(
@@ -318,8 +334,8 @@ app.post("/", async (c) => {
           rpcResult(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "mcp-toolbelt", version: "1.3.1" },
-            instructions: "29 DNS, SEO, SSL, security, WHOIS, mail, and AI tools. tools/list is free. tools/call is paid either per call via x402 (USDC on Base, no account) or with a card-paid API key sent as `Authorization: Bearer mcptb_...` or `x-api-key`: Starter $9/mo 2,000 credits https://buy.polar.sh/polar_cl_ohAX5VD8UYJGDHAjfP8Y5jowuK2nRQu0jb2XU3c9PBm ; Pro $29/mo 10,000 credits https://buy.polar.sh/polar_cl_NSE3CdNGwKv97h1v4Koj5mQqMt0ow8CR8oJdR19py6p ; docs https://papacasper.com/mcp-docs#api-key",
+            serverInfo: { name: "mcp-toolbelt", version: "1.4.0" },
+            instructions: `${Object.keys(tools).length} DNS, SEO, SSL, security, WHOIS, mail, screenshot/PDF, validation, conversion, and archive tools.`+" tools/list is free. tools/call is paid either per call via x402 (USDC on Base, no account) or with a card-paid API key sent as `Authorization: Bearer mcptb_...` or `x-api-key`: Starter $9/mo 2,000 credits https://buy.polar.sh/polar_cl_ohAX5VD8UYJGDHAjfP8Y5jowuK2nRQu0jb2XU3c9PBm ; Pro $29/mo 10,000 credits https://buy.polar.sh/polar_cl_NSE3CdNGwKv97h1v4Koj5mQqMt0ow8CR8oJdR19py6p ; docs https://papacasper.com/mcp-docs#api-key",
           })
         );
 

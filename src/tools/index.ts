@@ -8,6 +8,10 @@ import { tools as performanceTools } from "./performance";
 import { tools as devTools } from "./dev";
 import { tools as emailTools } from "./email";
 import { tools as mcpTools } from "./mcp";
+import { tools as renderTools } from "./render";
+import { tools as validateTools } from "./validate";
+import { tools as convertTools } from "./convert";
+import { tools as archiveTools } from "./archive";
 
 export const tools = {
   ...httpTools,
@@ -20,6 +24,10 @@ export const tools = {
   ...devTools,
   ...emailTools,
   ...mcpTools,
+  ...renderTools,
+  ...validateTools,
+  ...convertTools,
+  ...archiveTools,
 };
 
 export type ToolName = keyof typeof tools;
