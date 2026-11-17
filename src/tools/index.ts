@@ -12,6 +12,7 @@ import { tools as renderTools } from "./render";
 import { tools as validateTools } from "./validate";
 import { tools as convertTools } from "./convert";
 import { tools as archiveTools } from "./archive";
+import { tools as siteCheckTools } from "./sitechecks";
 
 export const tools = {
   ...httpTools,
@@ -28,6 +29,7 @@ export const tools = {
   ...validateTools,
   ...convertTools,
   ...archiveTools,
+  ...siteCheckTools,
 };
 
 export type ToolName = keyof typeof tools;

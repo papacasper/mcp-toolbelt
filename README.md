@@ -1,6 +1,6 @@
 # mcp-toolbelt
 
-Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 37 DNS, SEO, SSL,
+Public MCP server behind `https://papacasper.com/mcp/` (Streamable HTTP). 39 DNS, SEO, SSL,
 security, WHOIS, mail, AI-readiness, rendering, validation, and conversion tools for AI agents. `initialize` and `tools/list` are open; `tools/call`
 is paid one of two ways:
 
