@@ -35,8 +35,8 @@ export interface LogCallInput {
   network?: string;
 }
 
-export function logCall(input: LogCallInput) {
-  db.query(
+export function logCall(input: LogCallInput): number {
+  const result = db.query(
     `INSERT INTO calls (ts, tool, transport, success, duration_ms, error, payer, tx_hash, network)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
@@ -50,9 +50,26 @@ export function logCall(input: LogCallInput) {
     input.txHash ?? null,
     input.network ?? null
   );
+  return Number(result.lastInsertRowid);
 }
 
-// Best-effort decode of the x402-hono X-PAYMENT-RESPONSE header (base64 JSON
+// x402 settlement happens in the payment middleware AFTER the route handler has returned,
+// so paid calls are logged first and their settlement details are filled in afterwards.
+export function updateCallPayment(id: number, p: { payer?: string; txHash?: string; network?: string; settled: boolean; error?: string }) {
+  if (p.settled) {
+    db.query("UPDATE calls SET payer = ?, tx_hash = ?, network = ? WHERE id = ?")
+      .run(p.payer ?? null, p.txHash ?? null, p.network ?? null, id);
+  } else {
+    db.query("UPDATE calls SET success = 0, error = ? WHERE id = ?").run(p.error ?? "settlement failed", id);
+  }
+}
+
+/** Reads the settlement header from a response: x402 v2 uses PAYMENT-RESPONSE, v1 used X-PAYMENT-RESPONSE. */
+export function paymentResponseHeaderFrom(headers: Headers): string | null {
+  return headers.get("PAYMENT-RESPONSE") ?? headers.get("X-PAYMENT-RESPONSE");
+}
+
+// Best-effort decode of the x402 PAYMENT-RESPONSE / X-PAYMENT-RESPONSE header (base64 JSON
 // settlement payload: { success, transaction, network, payer }).
 export function decodePaymentResponseHeader(header: string | null | undefined) {
   if (!header) return null;
@@ -136,4 +153,25 @@ export function getStats() {
     recentCalls,
     recentPayments,
   };
+}
+
+/**
+ * Hono middleware for /pay/*, registered OUTSIDE (before) the x402 payment middleware.
+ * After the whole chain finishes (handler ran, payment settled or failed), it fills the
+ * settlement details into the metrics row the route handler stored as "metricsRowId".
+ */
+export async function settlementMetricsMiddleware(c: any, next: () => Promise<void>) {
+  await next();
+  const rowId = c.get("metricsRowId") as number | undefined;
+  if (!rowId) return;
+  try {
+    const payment = decodePaymentResponseHeader(paymentResponseHeaderFrom(c.res.headers));
+    if (c.res.status < 400 && payment) {
+      updateCallPayment(rowId, { settled: true, payer: payment.payer, txHash: payment.txHash, network: payment.network });
+    } else if (c.res.status >= 400) {
+      updateCallPayment(rowId, { settled: false, error: `x402 settlement failed (HTTP ${c.res.status})` });
+    }
+  } catch (err: any) {
+    console.error("metrics settlement update failed:", err?.message ?? err);
+  }
 }

@@ -4,7 +4,7 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { tools } from "./tools";
-import { logCall, decodePaymentResponseHeader, getStats } from "./metrics";
+import { logCall, decodePaymentResponseHeader, getStats, paymentResponseHeaderFrom, settlementMetricsMiddleware } from "./metrics";
 import { dashboardHtml } from "./dashboard";
 import { installFetchGuard } from "./tools/ssrf-guard";
 import { readStoredFile } from "./tools/files";
@@ -164,6 +164,12 @@ if (X402_PAY_TO) {
     ])
   );
 
+  // Outermost /pay/* middleware: runs after the x402 middleware below has settled the payment,
+  // then fills the settlement details (payer, tx hash, network) into the metrics row that the
+  // route handler wrote. Reading the header inside the handler is too early, since settlement
+  // only happens after the handler returns.
+  app.use("/pay/*", settlementMetricsMiddleware);
+
   // Customer API key on the REST routes: serve directly (no x402) when the key has credits.
   app.use("/pay/*", async (c, next) => {
     const key = customerKeyFrom(c);
@@ -222,16 +228,9 @@ if (X402_PAY_TO) {
     const started = Date.now();
     try {
       const output = await (tools as any)[name].run(args);
-      const payment = decodePaymentResponseHeader(c.res.headers.get("X-PAYMENT-RESPONSE"));
-      logCall({
-        tool: name,
-        transport: "pay",
-        success: true,
-        durationMs: Date.now() - started,
-        payer: payment?.payer,
-        txHash: payment?.txHash,
-        network: payment?.network,
-      });
+      // Payer / tx hash / network are filled in after settlement by the outer /pay/* middleware.
+      const rowId = logCall({ tool: name, transport: "pay", success: true, durationMs: Date.now() - started });
+      (c as any).set("metricsRowId", rowId);
       return c.json(output);
     } catch (err: any) {
       logCall({
@@ -311,8 +310,13 @@ app.post("/", async (c) => {
         headers: payHeaders,
         body: JSON.stringify(params?.arguments ?? {}),
       });
-      const paymentResponseHeader = payResponse.headers.get("X-PAYMENT-RESPONSE");
-      if (paymentResponseHeader) c.header("X-PAYMENT-RESPONSE", paymentResponseHeader);
+      // Settlement header from the inner /pay route (x402 v2 name PAYMENT-RESPONSE; v1 X-PAYMENT-RESPONSE).
+      // The metrics row for this call is written and settled inside that inner request.
+      const paymentResponseHeader = paymentResponseHeaderFrom(payResponse.headers);
+      if (paymentResponseHeader) {
+        c.header("PAYMENT-RESPONSE", paymentResponseHeader);
+        c.header("X-PAYMENT-RESPONSE", paymentResponseHeader);
+      }
       if (payResponse.status === 402) {
         const paymentRequiredHeader = payResponse.headers.get("payment-required");
         if (paymentRequiredHeader) c.header("payment-required", paymentRequiredHeader);
