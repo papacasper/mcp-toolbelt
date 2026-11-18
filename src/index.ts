@@ -4,6 +4,7 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { tools } from "./tools";
+import { toolMeta, assertToolMeta } from "./tools/annotations";
 import { logCall, decodePaymentResponseHeader, getStats, paymentResponseHeaderFrom, settlementMetricsMiddleware } from "./metrics";
 import { dashboardHtml } from "./dashboard";
 import { installFetchGuard } from "./tools/ssrf-guard";
@@ -11,6 +12,7 @@ import { readStoredFile } from "./tools/files";
 import { chargeKey, refundKey, creditsForPrice, periodResetsAt, CHECKOUT_LINKS } from "./apikeys";
 
 installFetchGuard();
+assertToolMeta(tools);
 
 const PORT = Number(process.env.PORT ?? 3457);
 const API_KEY = process.env.MCP_API_KEY ?? "";
@@ -246,11 +248,16 @@ if (X402_PAY_TO) {
 }
 
 function toolList() {
-  return Object.entries(tools).map(([name, def]) => ({
-    name,
-    description: def.description,
-    inputSchema: def.inputSchema,
-  }));
+  return Object.entries(tools).map(([name, def]) => {
+    const meta = toolMeta[name];
+    return {
+      name,
+      title: meta.title,
+      description: def.description,
+      inputSchema: def.inputSchema,
+      annotations: meta.annotations,
+    };
+  });
 }
 
 function rpcError(id: unknown, code: number, message: string) {
@@ -338,7 +345,14 @@ app.post("/", async (c) => {
           rpcResult(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "mcp-toolbelt", version: "1.4.0" },
+            serverInfo: {
+              name: "mcp-toolbelt",
+              title: "PapaCasper MCP Toolbelt",
+              version: "1.4.0",
+              description: "39 website, DNS, SEO, SSL, mail, and validation check tools for agents. Pay per call with x402 USDC on Base, or use a card-paid API-key plan.",
+              websiteUrl: "https://papacasper.com/mcp-docs",
+              icons: [{ src: "https://papacasper.com/avatar.jpg", mimeType: "image/jpeg", sizes: ["176x176"] }],
+            },
             instructions: `${Object.keys(tools).length} DNS, SEO, SSL, security, WHOIS, mail, screenshot/PDF, validation, conversion, and archive tools.`+" tools/list is free. tools/call is paid either per call via x402 (USDC on Base, no account) or with a card-paid API key sent as `Authorization: Bearer mcptb_...` or `x-api-key`: Starter $9/mo 2,000 credits https://buy.polar.sh/polar_cl_ohAX5VD8UYJGDHAjfP8Y5jowuK2nRQu0jb2XU3c9PBm ; Pro $29/mo 10,000 credits https://buy.polar.sh/polar_cl_NSE3CdNGwKv97h1v4Koj5mQqMt0ow8CR8oJdR19py6p ; docs https://papacasper.com/mcp-docs#api-key",
           })
         );

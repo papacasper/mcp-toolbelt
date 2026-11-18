@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.papacasper/mcp-toolbelt",
-  "title": "mcp-toolbelt",
-  "description": "39 agent tools: DNS, SEO, SSL, WHOIS, mail, screenshots, PDF, validation. x402 or card API key.",
+  "title": "PapaCasper MCP Toolbelt",
+  "description": "39 website, DNS, SEO, SSL, mail, and validation check tools for agents. Pay per call with x402 USDC on Base, or use a card-paid API-key plan.",
   "version": "1.4.0",
   "remotes": [
     {
